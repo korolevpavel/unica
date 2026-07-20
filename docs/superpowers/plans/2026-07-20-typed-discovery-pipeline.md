@@ -20,7 +20,7 @@
 
 **Files:**
 - Create: `spec/architecture/extension-point-discovery.md`
-- Create: `spec/decisions/0008-project-discovery-and-discovery-receipts.md`
+- Create: `spec/decisions/0010-project-discovery-and-discovery-receipts.md`
 - Modify: `tests/ci/test_product_contracts.py`
 
 - [ ] Write a failing test that requires the architecture to declare `unica.project.discover`, `mode=explore`, typed evidence provenance, and the explicit PR-A non-goals: receipts, mutation guards, display-text parsing, and domain-specific synonyms.

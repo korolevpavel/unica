@@ -447,6 +447,42 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertTrue(any("builder_version" in error and "14" in error for error in errors), errors)
 
+    def test_typed_project_discovery_architecture_has_a_read_only_first_slice(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        architecture = (
+            repo_root / "spec" / "architecture" / "extension-point-discovery.md"
+        ).read_text(encoding="utf-8")
+        adr = (
+            repo_root
+            / "spec"
+            / "decisions"
+            / "0010-project-discovery-and-discovery-receipts.md"
+        ).read_text(encoding="utf-8")
+
+        for value in (
+            "unica.project.discover",
+            "mode=explore",
+            "complete",
+            "bounded",
+            "unavailable",
+            "failed",
+            "contract_violation",
+            "source location",
+            "provider",
+            "freshness",
+            "receipts",
+            "mutation guards",
+            "display-text parsing",
+            "domain-specific synonyms",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, architecture)
+
+        self.assertIn("read-only", adr)
+        self.assertIn("never emits a receipt", adr)
+        self.assertIn("structural", adr)
+        self.assertIn("runtime flow", adr)
+
 
 if __name__ == "__main__":
     unittest.main()
