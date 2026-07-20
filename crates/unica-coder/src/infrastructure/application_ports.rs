@@ -113,6 +113,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 };
                 Ok(HandlerOutcome::plain(project_map(source_map, warning)))
             }
+            ToolHandler::ProjectDiscover => Err(
+                "unica.project.discover is not registered until snapshot evidence providers are available"
+                    .to_string(),
+            ),
             ToolHandler::BuildRuntime { command, .. } => {
                 CliAdapter::new("v8-runner", command, "build/runtime")
                     .invoke_cancellable(

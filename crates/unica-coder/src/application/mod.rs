@@ -13,6 +13,7 @@ pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
 
+pub(crate) mod discovery;
 pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
@@ -36,6 +37,7 @@ pub enum ToolHandler {
     },
     ProjectStatus,
     ProjectMap,
+    ProjectDiscover,
     BuildRuntime {
         command: &'static [&'static str],
         event: Option<DomainEventKind>,

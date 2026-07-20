@@ -1,10 +1,21 @@
 use super::operation_descriptors::native_operation_descriptor;
 use super::{RuntimeJobAction, ToolHandler, ToolSpec};
+use crate::application::discovery::contract::parse_explore_request;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
+const DISCOVERY_ARGS: &[&str] = &[
+    "concepts",
+    "cwd",
+    "knownArtifacts",
+    "limits",
+    "mode",
+    "searchTerms",
+    "sourceSet",
+    "task",
+];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
@@ -616,6 +627,9 @@ pub fn validate_tool_arguments(
     }
     if let ToolHandler::RuntimeJob { action } = tool.handler {
         validate_runtime_job_arguments(tool.name, action, args, dry_run)?;
+    }
+    if matches!(tool.handler, ToolHandler::ProjectDiscover) {
+        parse_explore_request(args)?;
     }
     validate_code_arguments(tool, args, dry_run)?;
     validate_meta_edit_arguments(tool, args)?;
@@ -1245,6 +1259,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
+        ToolHandler::ProjectDiscover => names = DISCOVERY_ARGS.to_vec(),
     }
     names.sort_unstable();
     names.dedup();
@@ -1281,6 +1296,7 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             "unica.meta.profile" => vec!["name"],
             _ => Vec::new(),
         },
+        ToolHandler::ProjectDiscover => vec!["mode", "task", "concepts"],
         _ => Vec::new(),
     }
 }
@@ -1434,6 +1450,27 @@ fn property_schema(name: &str) -> Value {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if matches!(tool.handler, ToolHandler::ProjectDiscover) {
+        return match name {
+            "mode" => json!({"type": "string", "enum": ["explore"]}),
+            "task" => json!({"type": "string", "minLength": 1, "maxLength": 8192}),
+            "concepts" => {
+                json!({"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 256}, "uniqueItems": true})
+            }
+            "searchTerms" => {
+                json!({"type": "array", "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 256}, "uniqueItems": true})
+            }
+            "knownArtifacts" => {
+                json!({"type": "array", "maxItems": 128, "items": {"type": "object", "additionalProperties": false, "required": ["kind", "ref"], "properties": {"kind": {"type": "string", "enum": ["metadata_object", "module", "method", "form", "command"]}, "ref": {"type": "string", "minLength": 1, "maxLength": 1024}}}})
+            }
+            "sourceSet" => json!({"type": "string", "minLength": 1, "maxLength": 1024}),
+            "limits" => {
+                json!({"type": "object", "additionalProperties": false, "properties": {"maxCandidates": {"type": "integer", "minimum": 1, "maximum": 100}, "maxGraphDepth": {"type": "integer", "minimum": 1, "maximum": 12}, "maxEvidence": {"type": "integer", "minimum": 1, "maximum": 2000}}})
+            }
+            "cwd" => json!({"type": "string"}),
+            _ => property_schema(name),
+        };
+    }
     if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
         return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
     }
