@@ -1,14 +1,13 @@
 use crate::application::AdapterOutcome;
 use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::common::atomic_replace;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::project_sources::discover_project_source_map;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn invoke_mutation(
     operation: &str,
@@ -287,33 +286,6 @@ fn unified_diff(path: &str, insertion: &[u8], no_op: bool) -> String {
         "--- a/{path}\n+++ b/{path}\n@@ insertion @@\n+{}",
         String::from_utf8_lossy(insertion)
     )
-}
-
-fn atomic_replace(target: &Path, bytes: &[u8]) -> Result<(), String> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_nanos();
-    let staged = target.with_file_name(format!(
-        ".{}.unica-stage-{}-{nonce}",
-        target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Module.bsl"),
-        std::process::id()
-    ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged)
-        .map_err(|error| format!("create staging file: {error}"))?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|error| format!("write staging file: {error}"))?;
-    fs::rename(&staged, target).map_err(|error| {
-        let _ = fs::remove_file(&staged);
-        format!("replace BSL module: {error}")
-    })
 }
 
 #[cfg(test)]
