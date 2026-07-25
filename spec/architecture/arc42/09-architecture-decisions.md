@@ -11,6 +11,7 @@ Current decisions:
 - ADR-0005: skills route only through `unica`;
 - ADR-0006: workspace-scoped internal services for warm analyzer/index state;
 - ADR-0009: OS-specific code behind infrastructure platform facades.
+- ADR-0013: provider-neutral code intelligence.
 
 If a future change adds, removes, or renames a public MCP tool, changes cache
 ownership, or exposes an internal engine directly, it must update or supersede
