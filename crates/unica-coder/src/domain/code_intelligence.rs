@@ -1,5 +1,6 @@
 use crate::domain::{cancellation::CancellationToken, workspace::WorkspaceContext};
 use serde_json::{Map, Value};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,6 +32,7 @@ pub enum ProviderCapability {
 pub struct SearchRequest {
     pub query: String,
     pub limit: usize,
+    pub source_root: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

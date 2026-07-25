@@ -30,7 +30,7 @@ use std::env;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 const GIT_TRACKING_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
@@ -78,10 +78,10 @@ pub trait BslMcpRunner {
     fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String>;
 }
 
-struct SystemProcessRunner;
+pub(crate) struct SystemProcessRunner;
 struct SystemBslMcpRunner;
 
-static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
+pub(crate) static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
 static SYSTEM_BSL_MCP_RUNNER: SystemBslMcpRunner = SystemBslMcpRunner;
 
 pub(crate) fn system_process_runner() -> &'static dyn ProcessRunner {

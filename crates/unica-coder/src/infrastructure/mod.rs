@@ -1,5 +1,8 @@
 pub(crate) mod application_ports;
 pub(crate) mod bundled_tools;
+// The provider adapters are staged before the parallel coordinator is wired.
+#[allow(dead_code)]
+pub(crate) mod code_intelligence;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
 pub(crate) mod metadata_kinds;
