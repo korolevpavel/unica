@@ -1789,6 +1789,7 @@ version = "0.10.0"
 dependencies = [
  "diffy",
  "fs2",
+ "futures",
  "jsonschema",
  "libc",
  "parser",

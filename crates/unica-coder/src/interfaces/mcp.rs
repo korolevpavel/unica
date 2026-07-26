@@ -1,5 +1,15 @@
 use crate::application::{input_schema_for_tool, ToolSpec, UnicaApplication};
 use crate::domain::cancellation::CancellationToken;
+use futures::FutureExt;
+use rmcp::{
+    handler::server::tool::{ToolCallContext, ToolRoute, ToolRouter},
+    model::{
+        CallToolRequestParam, CallToolResult, Content, Implementation, ListToolsResult,
+        ServerCapabilities, ServerInfo, ToolsCapability,
+    },
+    service::RequestContext,
+    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
+};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -13,13 +23,129 @@ const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 const MCP_INPUT_LINE_LIMIT: usize = 8 * 1024 * 1024;
 const MCP_MAX_TOOL_WORKERS: usize = 32;
 
+pub(crate) struct RmcpServer {
+    app: Arc<UnicaApplication>,
+    tool_catalog: Vec<rmcp::model::Tool>,
+    tool_router: ToolRouter<Self>,
+}
+
+impl RmcpServer {
+    pub(crate) fn new(app: Arc<UnicaApplication>) -> Result<Self, String> {
+        let mut tool_catalog = Vec::new();
+        let mut tool_router = ToolRouter::new();
+        for spec in app.tools() {
+            let schema = input_schema_for_tool(&spec)
+                .as_object()
+                .cloned()
+                .ok_or_else(|| format!("{} input schema is not an object", spec.name))?;
+            let tool = rmcp::model::Tool {
+                name: spec.name.into(),
+                description: Some(spec.description.into()),
+                input_schema: Arc::new(schema),
+                annotations: None,
+            };
+            tool_catalog.push(tool.clone());
+            tool_router.add_route(ToolRoute::new_dyn(
+                tool,
+                |context: ToolCallContext<'_, Self>| {
+                    async move { context.service.call_rmcp_tool(context).await }.boxed()
+                },
+            ));
+        }
+
+        Ok(Self {
+            app,
+            tool_catalog,
+            tool_router,
+        })
+    }
+
+    async fn call_rmcp_tool(
+        &self,
+        context: ToolCallContext<'_, Self>,
+    ) -> Result<CallToolResult, McpError> {
+        let name = context.name().to_owned();
+        let arguments = context.arguments.unwrap_or_default();
+        let rmcp_cancellation = context.request_context.ct;
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        let app = Arc::clone(&self.app);
+        let mut task = tokio::task::spawn_blocking(move || {
+            call_tool_cancellable(&app, &name, &arguments, task_cancellation)
+        });
+
+        tokio::select! {
+            outcome = &mut task => match outcome {
+                Ok(Ok(result)) => Ok(CallToolResult::success(vec![Content::text(result)])),
+                Ok(Err((_, message))) => Ok(CallToolResult::error(vec![Content::text(message)])),
+                Err(error) => Err(McpError::internal_error(error.to_string(), None)),
+            },
+            _ = rmcp_cancellation.cancelled() => {
+                cancellation.cancel();
+                let _ = task.await;
+                Ok(CallToolResult::error(vec![Content::text("request cancelled")]))
+            }
+        }
+    }
+}
+
+impl ServerHandler for RmcpServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            capabilities: ServerCapabilities {
+                tools: Some(ToolsCapability {
+                    list_changed: Some(false),
+                }),
+                ..ServerCapabilities::default()
+            },
+            server_info: Implementation {
+                name: "unica".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            ..ServerInfo::default()
+        }
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParam>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
+        std::future::ready(Ok(ListToolsResult::with_all_items(
+            self.tool_catalog.clone(),
+        )))
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParam,
+        context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+        self.tool_router
+            .call(ToolCallContext::new(self, request, context))
+    }
+}
+
 pub fn run_stdio() {
-    let stdin = io::stdin();
-    run_stdio_with(
-        stdin.lock(),
-        io::stdout(),
-        Arc::new(UnicaApplication::new()),
-    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build();
+    let result = runtime
+        .map_err(|error| error.to_string())
+        .and_then(|runtime| {
+            runtime.block_on(async {
+                let server = RmcpServer::new(Arc::new(UnicaApplication::new()))?;
+                let running = server
+                    .serve(rmcp::transport::stdio())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                running.waiting().await.map_err(|error| error.to_string())?;
+                Ok(())
+            })
+        });
+    if let Err(error) = result {
+        eprintln!("failed to serve MCP over stdio: {error}");
+    }
 }
 
 pub fn run_stdio_with<R, W>(reader: R, writer: W, app: Arc<UnicaApplication>)
@@ -874,6 +1000,27 @@ mod tests {
                 "missing {name}"
             );
         }
+    }
+
+    #[test]
+    fn rmcp_tool_catalog_preserves_the_data_driven_tools_list_contract() {
+        let app = Arc::new(UnicaApplication::new());
+        let server = RmcpServer::new(Arc::clone(&app)).unwrap();
+
+        let actual = server
+            .tool_catalog
+            .clone()
+            .into_iter()
+            .map(|tool| {
+                json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": Value::Object((*tool.input_schema).clone()),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, list_tools(app.tools()));
     }
 
     #[test]
