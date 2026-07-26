@@ -23,17 +23,34 @@ const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 const MCP_INPUT_LINE_LIMIT: usize = 8 * 1024 * 1024;
 const MCP_MAX_TOOL_WORKERS: usize = 32;
 
+type ToolCallHandler = dyn Fn(&str, &Map<String, Value>, CancellationToken) -> Result<String, (i64, String)>
+    + Send
+    + Sync;
+
 pub(crate) struct RmcpServer {
-    app: Arc<UnicaApplication>,
+    handler: Arc<ToolCallHandler>,
     tool_catalog: Vec<rmcp::model::Tool>,
     tool_router: ToolRouter<Self>,
+    tool_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl RmcpServer {
     pub(crate) fn new(app: Arc<UnicaApplication>) -> Result<Self, String> {
+        let tool_specs = app.tools();
+        let tool_app = Arc::clone(&app);
+        let handler: Arc<ToolCallHandler> = Arc::new(move |name, arguments, cancellation| {
+            call_tool_cancellable(&tool_app, name, arguments, cancellation)
+        });
+        Self::with_handler(tool_specs, handler)
+    }
+
+    fn with_handler(
+        tool_specs: Vec<ToolSpec>,
+        handler: Arc<ToolCallHandler>,
+    ) -> Result<Self, String> {
         let mut tool_catalog = Vec::new();
         let mut tool_router = ToolRouter::new();
-        for spec in app.tools() {
+        for spec in tool_specs {
             let schema = input_schema_for_tool(&spec)
                 .as_object()
                 .cloned()
@@ -54,9 +71,10 @@ impl RmcpServer {
         }
 
         Ok(Self {
-            app,
+            handler,
             tool_catalog,
             tool_router,
+            tool_slots: Arc::new(tokio::sync::Semaphore::new(MCP_MAX_TOOL_WORKERS)),
         })
     }
 
@@ -67,12 +85,19 @@ impl RmcpServer {
         let name = context.name().to_owned();
         let arguments = context.arguments.unwrap_or_default();
         let rmcp_cancellation = context.request_context.ct;
+        let _permit = match Arc::clone(&self.tool_slots).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "dispatcher overloaded: at most {MCP_MAX_TOOL_WORKERS} concurrent tools/call requests are allowed"
+                ))]));
+            }
+        };
         let cancellation = CancellationToken::new();
         let task_cancellation = cancellation.clone();
-        let app = Arc::clone(&self.app);
-        let mut task = tokio::task::spawn_blocking(move || {
-            call_tool_cancellable(&app, &name, &arguments, task_cancellation)
-        });
+        let handler = Arc::clone(&self.handler);
+        let mut task =
+            tokio::task::spawn_blocking(move || handler(&name, &arguments, task_cancellation));
 
         tokio::select! {
             outcome = &mut task => match outcome {
@@ -159,10 +184,6 @@ where
     });
     run_stdio_with_handler(reader, writer, app, handler);
 }
-
-type ToolCallHandler = dyn Fn(&str, &Map<String, Value>, CancellationToken) -> Result<String, (i64, String)>
-    + Send
-    + Sync;
 
 fn run_stdio_with_handler<R, W>(
     mut reader: R,
@@ -1083,6 +1104,131 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("operation"));
+
+        drop(client_writer);
+        drop(client_reader);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rmcp_transport_limits_concurrent_tool_calls() {
+        let (server_transport, client_transport) = tokio::io::duplex(1024 * 1024);
+        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _| {
+            std::thread::sleep(Duration::from_millis(200));
+            Ok("completed".to_string())
+        });
+        let server = RmcpServer::with_handler(UnicaApplication::new().tools(), handler).unwrap();
+        let server_task = tokio::spawn(async move {
+            let running = server.serve(server_transport).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let (client_reader, mut client_writer) = tokio::io::split(client_transport);
+        let mut client_reader = tokio::io::BufReader::new(client_reader);
+        let mut response = String::new();
+
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client_writer,
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+"#,
+        )
+        .await
+        .unwrap();
+        tokio::io::AsyncBufReadExt::read_line(&mut client_reader, &mut response)
+            .await
+            .unwrap();
+
+        for id in 0..=MCP_MAX_TOOL_WORKERS {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": id + 10,
+                "method": "tools/call",
+                "params": { "name": "unica.runtime.execute", "arguments": {} },
+            });
+            tokio::io::AsyncWriteExt::write_all(
+                &mut client_writer,
+                format!("{request}\n").as_bytes(),
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut overloaded = 0;
+        for _ in 0..=MCP_MAX_TOOL_WORKERS {
+            response.clear();
+            tokio::io::AsyncBufReadExt::read_line(&mut client_reader, &mut response)
+                .await
+                .unwrap();
+            let call_response: Value = serde_json::from_str(&response).unwrap();
+            if call_response["result"]["isError"] == true {
+                overloaded += 1;
+                assert!(call_response["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("overloaded"));
+            }
+        }
+        assert_eq!(overloaded, 1);
+
+        drop(client_writer);
+        drop(client_reader);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rmcp_transport_cancels_the_active_tool_call() {
+        let (server_transport, client_transport) = tokio::io::duplex(1024 * 1024);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let observed_cancellation = Arc::clone(&cancelled);
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation| {
+            while !cancellation.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            observed_cancellation.store(true, Ordering::SeqCst);
+            Ok("unexpected success".to_string())
+        });
+        let server = RmcpServer::with_handler(UnicaApplication::new().tools(), handler).unwrap();
+        let server_task = tokio::spawn(async move {
+            let running = server.serve(server_transport).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let (client_reader, mut client_writer) = tokio::io::split(client_transport);
+        let mut client_reader = tokio::io::BufReader::new(client_reader);
+        let mut response = String::new();
+
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client_writer,
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{}}}
+"#,
+        )
+        .await
+        .unwrap();
+        tokio::io::AsyncBufReadExt::read_line(&mut client_reader, &mut response)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client_writer,
+            br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"test"}}
+"#,
+        )
+        .await
+        .unwrap();
+        response.clear();
+        tokio::io::AsyncBufReadExt::read_line(&mut client_reader, &mut response)
+            .await
+            .unwrap();
+        let cancelled_response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(cancelled_response["id"], 7);
+        assert_eq!(cancelled_response["result"]["isError"], true);
+        assert_eq!(
+            cancelled_response["result"]["content"][0]["text"],
+            "request cancelled"
+        );
+        assert!(cancelled.load(Ordering::SeqCst));
 
         drop(client_writer);
         drop(client_reader);
