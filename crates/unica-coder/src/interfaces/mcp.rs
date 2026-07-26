@@ -10,16 +10,28 @@ use rmcp::{
     service::RequestContext,
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
 };
-use serde_json::{json, Map, Value};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::{Map, Value};
+#[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::io::{self, BufRead, Write};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::{Condvar, Mutex};
+#[cfg(test)]
 use std::thread;
+#[cfg(test)]
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 const PROTOCOL_VERSION: &str = "2024-11-05";
+#[cfg(test)]
 const EOF_DRAIN_GRACE: Duration = Duration::from_millis(250);
+#[cfg(test)]
 const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
+#[cfg(test)]
 const MCP_INPUT_LINE_LIMIT: usize = 8 * 1024 * 1024;
 const MCP_MAX_TOOL_WORKERS: usize = 32;
 
@@ -173,6 +185,7 @@ pub fn run_stdio() {
     }
 }
 
+#[cfg(test)]
 pub fn run_stdio_with<R, W>(reader: R, writer: W, app: Arc<UnicaApplication>)
 where
     R: BufRead,
@@ -185,6 +198,7 @@ where
     run_stdio_with_handler(reader, writer, app, handler);
 }
 
+#[cfg(test)]
 fn run_stdio_with_handler<R, W>(
     mut reader: R,
     writer: W,
@@ -267,11 +281,13 @@ fn run_stdio_with_handler<R, W>(
     registry.close();
 }
 
+#[cfg(test)]
 enum BoundedLine {
     Line(Vec<u8>),
     TooLarge,
 }
 
+#[cfg(test)]
 fn read_bounded_line<R: BufRead>(reader: &mut R, limit: usize) -> io::Result<Option<BoundedLine>> {
     let mut line = Vec::new();
     let mut too_large = false;
@@ -308,6 +324,7 @@ fn read_bounded_line<R: BufRead>(reader: &mut R, limit: usize) -> io::Result<Opt
     }
 }
 
+#[cfg(test)]
 fn dispatch_tool_call<W: Write + Send + 'static>(
     message: Value,
     handler: Arc<ToolCallHandler>,
@@ -371,6 +388,7 @@ fn dispatch_tool_call<W: Write + Send + 'static>(
     true
 }
 
+#[cfg(test)]
 fn write_response<W: Write>(writer: &Arc<Mutex<W>>, response: Value) -> bool {
     let Ok(mut writer) = writer.lock() else {
         return false;
@@ -378,18 +396,21 @@ fn write_response<W: Write>(writer: &Arc<Mutex<W>>, response: Value) -> bool {
     writeln!(writer, "{response}").is_ok() && writer.flush().is_ok()
 }
 
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub struct CancellationRegistry {
     state: Arc<Mutex<CancellationRegistryState>>,
     activity: Arc<(Mutex<DispatcherActivity>, Condvar)>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct CancellationRegistryState {
     requests: HashMap<String, CancellationToken>,
     failed: bool,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct DispatcherActivity {
     handlers: usize,
@@ -397,6 +418,7 @@ struct DispatcherActivity {
     closed: bool,
 }
 
+#[cfg(test)]
 impl CancellationRegistry {
     pub fn register(&self, id: &Value) -> Result<CancellationToken, String> {
         let key = request_id_key(id)?;
@@ -549,32 +571,39 @@ impl CancellationRegistry {
     }
 }
 
+#[cfg(test)]
 fn request_id_key(id: &Value) -> Result<String, String> {
     serde_json::to_string(id).map_err(|err| format!("invalid request id: {err}"))
 }
 
+#[cfg(test)]
 struct RegistryCompletionGuard {
     registry: CancellationRegistry,
     id: Value,
     finished: bool,
 }
 
+#[cfg(test)]
 struct WorkerCompletionGuard(CancellationRegistry);
 
+#[cfg(test)]
 impl Drop for WorkerCompletionGuard {
     fn drop(&mut self) {
         self.0.worker_finished();
     }
 }
 
+#[cfg(test)]
 struct PublicationCompletionGuard(CancellationRegistry);
 
+#[cfg(test)]
 impl Drop for PublicationCompletionGuard {
     fn drop(&mut self) {
         self.0.publication_finished();
     }
 }
 
+#[cfg(test)]
 impl RegistryCompletionGuard {
     fn new(registry: CancellationRegistry, id: Value) -> Self {
         Self {
@@ -591,6 +620,7 @@ impl RegistryCompletionGuard {
     }
 }
 
+#[cfg(test)]
 impl Drop for RegistryCompletionGuard {
     fn drop(&mut self) {
         if !self.finished {
@@ -599,6 +629,7 @@ impl Drop for RegistryCompletionGuard {
     }
 }
 
+#[cfg(test)]
 pub fn handle_message(app: &UnicaApplication, message: Value) -> Option<Value> {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
@@ -641,6 +672,7 @@ pub fn handle_message(app: &UnicaApplication, message: Value) -> Option<Value> {
     }
 }
 
+#[cfg(test)]
 fn list_tools(tools: Vec<ToolSpec>) -> Vec<Value> {
     tools
         .iter()
@@ -654,6 +686,7 @@ fn list_tools(tools: Vec<ToolSpec>) -> Vec<Value> {
         .collect()
 }
 
+#[cfg(test)]
 fn call_tool_from_message(
     app: &UnicaApplication,
     message: &Value,
@@ -662,6 +695,7 @@ fn call_tool_from_message(
     call_tool(app, &name, &args)
 }
 
+#[cfg(test)]
 fn tool_call_params(message: &Value) -> Result<(String, Map<String, Value>), (i64, String)> {
     let params = message
         .get("params")
@@ -678,6 +712,7 @@ fn tool_call_params(message: &Value) -> Result<(String, Map<String, Value>), (i6
     Ok((name.to_string(), args))
 }
 
+#[cfg(test)]
 fn call_tool(
     app: &UnicaApplication,
     name: &str,
@@ -699,10 +734,12 @@ fn call_tool_cancellable(
     serde_json::to_string_pretty(&result).map_err(|err| (-32603, err.to_string()))
 }
 
+#[cfg(test)]
 fn success_response(id: Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
 
+#[cfg(test)]
 fn error_response(id: Value, code: i64, message: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
