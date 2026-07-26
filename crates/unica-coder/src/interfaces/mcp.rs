@@ -1023,6 +1023,72 @@ mod tests {
         assert_eq!(actual, list_tools(app.tools()));
     }
 
+    #[tokio::test]
+    async fn rmcp_transport_completes_handshake_and_lists_data_driven_tools() {
+        let (server_transport, client_transport) = tokio::io::duplex(1024 * 1024);
+        let server = RmcpServer::new(Arc::new(UnicaApplication::new())).unwrap();
+        let server_task = tokio::spawn(async move {
+            let running = server.serve(server_transport).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let (client_reader, mut client_writer) = tokio::io::split(client_transport);
+        let mut client_reader = tokio::io::BufReader::new(client_reader);
+        let mut response = String::new();
+
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client_writer,
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}
+"#,
+        )
+        .await
+        .unwrap();
+        tokio::io::AsyncBufReadExt::read_line(&mut client_reader, &mut response)
+            .await
+            .unwrap();
+        let initialized: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(initialized["id"], 1);
+        assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client_writer,
+            br#"{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+"#,
+        )
+        .await
+        .unwrap();
+        response.clear();
+        tokio::io::AsyncBufReadExt::read_line(&mut client_reader, &mut response)
+            .await
+            .unwrap();
+        let listed: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(listed["id"], 2);
+        assert_eq!(listed["result"]["tools"][0]["name"], "unica.cf.edit");
+
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client_writer,
+            br#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{}}}
+"#,
+        )
+        .await
+        .unwrap();
+        response.clear();
+        tokio::io::AsyncBufReadExt::read_line(&mut client_reader, &mut response)
+            .await
+            .unwrap();
+        let failed_call: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(failed_call["id"], 3);
+        assert_eq!(failed_call["result"]["isError"], true);
+        assert!(failed_call["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("operation"));
+
+        drop(client_writer);
+        drop(client_reader);
+        server_task.await.unwrap();
+    }
+
     #[test]
     fn tools_list_exposes_flat_diagnostics_worktree_contract() {
         let app = UnicaApplication::new();
