@@ -6,17 +6,17 @@
 
 ## Итог
 
-- Инструментов: **73**
+- Инструментов: **74**
 - Отвечают типизированным `data`: **45**
 - Типизированы частично: часть результата всё ещё текст: **1**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **21**
+- Отвечают прозой в `stdout`: **22**
 
-- В границах типизации: **45**
+- В границах типизации: **46**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **0**
-- Публикуют больше 20 аргументов из общего списка: **35**
+- Осталось перевести на типизированный `data` в границах работы: **1**
+- Публикуют больше 20 аргументов из общего списка: **36**
 
 ## build — сборка и запуск платформы
 
@@ -1047,6 +1047,28 @@ Compile role metadata and Rights.xml from JSON DSL.
 **Сценарии:**
 
 - Создать роль из описания прав
+
+### `unica.role.edit`
+
+Edit one right in an existing role Rights.xml.
+
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `RightsPath` | string | да | Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd` |
+| `ObjectName` | string | да | Name of the owning object for `unica.form.remove` and `unica.template.add`/`remove`; for `unica.help.add` it is instead the object's path under `srcDir`, e.g. `Catalogs/МойСправочник` |
+| `Name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
+| `Value` | string | да | Payload for `operation`: a shorthand string batched with `;;`, a JSON string, or the whole inline JSON definition for `unica.dcs.compile` and `unica.subsystem.compile` |
+
+Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+
+**Результат сейчас:** текст в конверте результата: изменение одного права и путь Rights.xml (отвечают прозой в `stdout`)
+
+**Целевой контракт:** вне границ работы
+
+**Сценарии:**
+
+- Запретить удаление для одного справочника, сохранив остальные права роли
+- Проверить точечную правку в предпросмотре до применения
 
 ### `unica.role.info`
 

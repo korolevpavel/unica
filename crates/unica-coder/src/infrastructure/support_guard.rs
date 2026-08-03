@@ -5,7 +5,7 @@ use crate::application::ports::SupportGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{
-    absolutize, path_arg, required_string, resolve_code_patch_guard_path, support_guard_violation,
+    absolutize, path_arg, required_string, resolve_code_patch_guard_path, resolve_role_read_rights_path, support_guard_violation,
     SupportGuardViolation,
 };
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
@@ -78,6 +78,7 @@ fn support_guard_target(
         SupportGuardPolicy::HandlerResolved { requirement } => {
             let resolved = match operation {
                 "xdto-edit" => resolve_xdto_guard_path(args, context).ok(),
+                "role-edit" => resolve_role_read_rights_path(args, context).ok(),
                 _ => resolve_code_patch_guard_path(args, context).ok(),
             };
             resolved.map(|path| (path, requirement))

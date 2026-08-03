@@ -184,6 +184,15 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
 - **Scope:** source, packaged, runtime
 
+### INV-MCP-TARGETED-WRITERS — Точечные writers не пересобирают существующий объект
+
+- **Rule:** `unica.meta.edit` изменяет предопределённые данные только у
+  поддерживаемого владельца, а `unica.role.edit` — только названное право
+  существующей роли; оба инструмента не заменяют неуказанные XML-узлы.
+- **Decision:** ADR-0025
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/role.rs`
+- **Scope:** source, runtime
+
 ### INV-MCP-NO-ENGINE-SERVERS — `unica` — единственный MCP-сервер, видимый модели
 
 - **Rule:** Внутренние движки (сборка и runtime, анализ BSL, индекс кода,

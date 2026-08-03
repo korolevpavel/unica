@@ -139,6 +139,8 @@ const META_EDIT_OPERATIONS: &[&str] = &[
     "set-registerRecords",
     "set-basedOn",
     "set-inputByString",
+    "upsert-predefined",
+    "remove-predefined",
 ];
 const CFE_PATCH_METHOD_CONTEXTS: &[&str] = &["НаСервере", "НаКлиенте", "НаСервереБезКонтекста"];
 const CFE_PATCH_METHOD_INTERCEPTOR_TYPES: &[&str] = &["Before", "After"];

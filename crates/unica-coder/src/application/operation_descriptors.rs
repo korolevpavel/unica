@@ -96,6 +96,7 @@ const FORM_EDIT_REQUIRED: &[&str] = &["FormPath"];
 const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
 const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
 const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
+const ROLE_EDIT_REQUIRED: &[&str] = &["RightsPath", "ObjectName", "Name", "Value"];
 const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
 // `position` is required only by operation `insert`, so the descriptor cannot
 // demand it for every call; `validate_code_patch_arguments` enforces it per
@@ -199,7 +200,7 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
         "dcs-info" | "dcs-validate" => DCS_READ_PATH_GROUPS,
         "mxl-decompile" | "mxl-info" | "mxl-validate" => MXL_READ_PATH_GROUPS,
         "mxl-compile" => COMPILE_TO_PATH_GROUPS,
-        "role-info" | "role-validate" => RIGHTS_READ_PATH_GROUPS,
+        "role-edit" | "role-info" | "role-validate" => RIGHTS_READ_PATH_GROUPS,
         _ => &[],
     }
 }
@@ -569,6 +570,15 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         OUTPUT_DIR,
         OUTPUT_DIR,
         Some(path_guard(OUTPUT_DIR, SupportGuardRequirement::Editable)),
+    ),
+    descriptor_with_paths(
+        "role-edit",
+        ROLE_EDIT_REQUIRED,
+        EMPTY,
+        RIGHTS_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
+        Some(handler_resolved_guard(SupportGuardRequirement::Editable)),
     ),
     descriptor_with_paths(
         "role-info",

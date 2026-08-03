@@ -53,6 +53,9 @@ impl NativeOperationAdapter {
             if operation == "meta-edit" {
                 return Ok(meta::preview_meta_edit(args, context));
             }
+            if operation == "role-edit" {
+                return Ok(role::preview_role_edit(args, context));
+            }
             if operation == "form-edit" && form::has_edit_payload(args) {
                 return Ok(form::preview_form_edit(args, context));
             }
