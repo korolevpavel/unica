@@ -2080,7 +2080,7 @@ fn edit_role_internal(
     context: &WorkspaceContext,
     dry_run: bool,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(PathBuf, bool), String> {
+    let result = (|| -> Result<(PathBuf, bool, Option<String>), String> {
         let rights_path = resolve_role_read_rights_path(args, context)?;
         let object_name = string_arg(args, &["ObjectName", "objectName"])
             .filter(|value| !value.trim().is_empty())
@@ -2088,8 +2088,17 @@ fn edit_role_internal(
         let right_name = string_arg(args, &["Name", "name"])
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| "role.edit requires Name (the right name)".to_string())?;
-        let value = args.get("Value").or_else(|| args.get("value"))
-            .and_then(|value| value.as_bool().map(|value| value.to_string()).or_else(|| value.as_str().filter(|value| matches!(*value, "true" | "false")).map(ToOwned::to_owned)))
+        let value = args
+            .get("Value")
+            .or_else(|| args.get("value"))
+            .and_then(|value| {
+                value.as_bool().map(|value| value.to_string()).or_else(|| {
+                    value
+                        .as_str()
+                        .filter(|value| matches!(*value, "true" | "false"))
+                        .map(ToOwned::to_owned)
+                })
+            })
             .ok_or_else(|| "role.edit Value must be boolean true or false".to_string())?;
         let object_type = role_validate_object_type(object_name);
         let allowed = role_validate_known_rights(object_type);
@@ -2105,43 +2114,108 @@ fn edit_role_internal(
         let updated = role_edit_right_xml(&text, object_name, right_name, &value)?;
         validate_compiled_role_rights_xml(&updated, "2.20")?;
         let changed = updated.as_bytes() != original.as_slice();
+        let diff = if dry_run {
+            Some(meta_edit_unified_diff(
+                &rights_path.display().to_string(),
+                &text,
+                &updated,
+            )?)
+        } else {
+            None
+        };
         if changed && !dry_run {
             let mut transaction = CompileTransaction::new();
             transaction.replace_bytes(&rights_path, &original, updated.into_bytes())?;
             transaction.commit_with_post_validation(|| {
-                let published = fs::read_to_string(&rights_path)
-                    .map_err(|error| format!("failed to read {}: {error}", rights_path.display()))?;
+                let published = fs::read_to_string(&rights_path).map_err(|error| {
+                    format!("failed to read {}: {error}", rights_path.display())
+                })?;
                 validate_compiled_role_rights_xml(&published, "2.20")
             })?;
         }
-        Ok((rights_path, changed))
+        Ok((rights_path, changed, diff))
     })();
     match result {
-        Ok((path, changed)) => AdapterOutcome {
+        Ok((path, changed, diff)) => AdapterOutcome {
             ok: true,
-            summary: if dry_run { "dry run: unica.role.edit planned native role edit" } else { "unica.role.edit completed with native role editor" }.to_string(),
-            changes: changed.then(|| format!("{} {}", if dry_run { "would update" } else { "updated" }, path.display())).into_iter().collect(),
-            warnings: Vec::new(), errors: Vec::new(), artifacts: vec![path.display().to_string()], stdout: None, stderr: None, command: None,
+            summary: if dry_run {
+                "dry run: unica.role.edit planned native role edit"
+            } else {
+                "unica.role.edit completed with native role editor"
+            }
+            .to_string(),
+            changes: changed
+                .then(|| {
+                    format!(
+                        "{} {}",
+                        if dry_run { "would update" } else { "updated" },
+                        path.display()
+                    )
+                })
+                .into_iter()
+                .collect(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![path.display().to_string()],
+            stdout: diff,
+            stderr: None,
+            command: None,
         },
-        Err(error) => AdapterOutcome { ok: false, summary: if dry_run { "dry run: unica.role.edit failed in native role editor" } else { "unica.role.edit failed in native role editor" }.to_string(), changes: Vec::new(), warnings: Vec::new(), errors: vec![error.clone()], artifacts: Vec::new(), stdout: None, stderr: Some(format!("{error}\n")), command: None },
+        Err(error) => AdapterOutcome {
+            ok: false,
+            summary: if dry_run {
+                "dry run: unica.role.edit failed in native role editor"
+            } else {
+                "unica.role.edit failed in native role editor"
+            }
+            .to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![error.clone()],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: Some(format!("{error}\n")),
+            command: None,
+        },
     }
 }
 
-fn role_edit_right_xml(text: &str, object_name: &str, right_name: &str, value: &str) -> Result<String, String> {
+fn role_edit_right_xml(
+    text: &str,
+    object_name: &str,
+    right_name: &str,
+    value: &str,
+) -> Result<String, String> {
     let object_marker = format!("<name>{}</name>", escape_xml(object_name));
-    let object_name_at = text.find(&object_marker).ok_or_else(|| format!("role.edit target object not found: {object_name}"))?;
-    let object_start = text[..object_name_at].rfind("<object>").ok_or_else(|| format!("role.edit malformed object: {object_name}"))?;
-    let object_end_relative = text[object_name_at..].find("</object>").ok_or_else(|| format!("role.edit malformed object: {object_name}"))?;
+    let object_name_at = text
+        .find(&object_marker)
+        .ok_or_else(|| format!("role.edit target object not found: {object_name}"))?;
+    let object_start = text[..object_name_at]
+        .rfind("<object>")
+        .ok_or_else(|| format!("role.edit malformed object: {object_name}"))?;
+    let object_end_relative = text[object_name_at..]
+        .find("</object>")
+        .ok_or_else(|| format!("role.edit malformed object: {object_name}"))?;
     let object_end = object_name_at + object_end_relative;
     let object = &text[object_start..object_end];
     let right_marker = format!("<name>{}</name>", escape_xml(right_name));
     if let Some(right_name_at) = object.find(&right_marker) {
-        let right_start = object[..right_name_at].rfind("<right>").ok_or_else(|| format!("role.edit malformed right: {right_name}"))?;
-        let right_end_relative = object[right_name_at..].find("</right>").ok_or_else(|| format!("role.edit malformed right: {right_name}"))?;
+        let right_start = object[..right_name_at]
+            .rfind("<right>")
+            .ok_or_else(|| format!("role.edit malformed right: {right_name}"))?;
+        let right_end_relative = object[right_name_at..]
+            .find("</right>")
+            .ok_or_else(|| format!("role.edit malformed right: {right_name}"))?;
         let right_end = right_name_at + right_end_relative;
         let right = &object[right_start..right_end];
-        let value_start = right.find("<value>").ok_or_else(|| format!("role.edit right has no value: {right_name}"))? + "<value>".len();
-        let value_end = right[value_start..].find("</value>").ok_or_else(|| format!("role.edit right has malformed value: {right_name}"))? + value_start;
+        let value_start = right
+            .find("<value>")
+            .ok_or_else(|| format!("role.edit right has no value: {right_name}"))?
+            + "<value>".len();
+        let value_end = right[value_start..]
+            .find("</value>")
+            .ok_or_else(|| format!("role.edit right has malformed value: {right_name}"))?
+            + value_start;
         let absolute_start = object_start + right_start + value_start;
         let absolute_end = object_start + right_start + value_end;
         let mut output = text.to_string();
@@ -2880,9 +2954,21 @@ mod role_compile_contract_tests {
             "<restrictionTemplate><name>Keep</name><condition>x</condition></restrictionTemplate></Rights>"
         );
         let edited = role_edit_right_xml(source, "Catalog.Demo", "Delete", "false").unwrap();
-        assert!(edited.contains("<name>Read</name><value>true</value>"), "{edited}");
-        assert!(edited.contains("<name>Delete</name><value>false</value>"), "{edited}");
-        assert!(edited.contains("<restrictionTemplate><name>Keep</name>"), "{edited}");
-        assert_eq!(role_edit_right_xml(&edited, "Catalog.Demo", "Delete", "false").unwrap(), edited);
+        assert!(
+            edited.contains("<name>Read</name><value>true</value>"),
+            "{edited}"
+        );
+        assert!(
+            edited.contains("<name>Delete</name><value>false</value>"),
+            "{edited}"
+        );
+        assert!(
+            edited.contains("<restrictionTemplate><name>Keep</name>"),
+            "{edited}"
+        );
+        assert_eq!(
+            role_edit_right_xml(&edited, "Catalog.Demo", "Delete", "false").unwrap(),
+            edited
+        );
     }
 }

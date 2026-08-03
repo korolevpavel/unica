@@ -5,8 +5,8 @@ use crate::application::ports::SupportGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{
-    absolutize, path_arg, required_string, resolve_code_patch_guard_path, resolve_role_read_rights_path, support_guard_violation,
-    SupportGuardViolation,
+    absolutize, path_arg, required_string, resolve_code_patch_guard_path,
+    resolve_role_read_rights_path, support_guard_violation, SupportGuardViolation,
 };
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::native_operations::{meta, template};
