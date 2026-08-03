@@ -1918,6 +1918,16 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
+            name: "unica.role.edit",
+            description: "Edit one right in an existing role Rights.xml.",
+            mutating: true,
+            cache_access: cache_access_for("role-edit", Some(DomainEventKind::RoleChanged)),
+            handler: ToolHandler::NativeOperation {
+                operation: "role-edit",
+                event: Some(DomainEventKind::RoleChanged),
+            },
+        },
+        ToolSpec {
             name: "unica.role.info",
             description: "Inspect role Rights.xml.",
             mutating: false,

@@ -81,6 +81,8 @@ Batch через `;;` во всех операциях. Подробный си�
 | `modify-attribute` | `Имя: ключ=значение` | `"Статус: fillValue=Enum.Статусы.EnumValue.Новый"` |
 | `modify-ts-attribute` | `ТЧ.Имя: ключ=значение` | `"Товары.Статус: fillValue=nil"` |
 | `modify-ts` | `ТЧ: ключ=значение` | `"Товары: lineNumberLength=9"` |
+| `upsert-predefined` | JSON с `id`, `name`, опциональными `code`, `description` | `'{"id":"c7d2e6fc-3824-4b56-b4be-ae6be4944c0e","name":"Основной"}'` |
+| `remove-predefined` | JSON с `id` | `'{"id":"c7d2e6fc-3824-4b56-b4be-ae6be4944c0e"}'` |
 
 Позиционная вставка: `"Склад: CatalogRef.Склады >> after Организация"`.
 
@@ -110,6 +112,17 @@ Batch через `;;` во всех операциях. Подробный си�
 Если свойство или контекст недопустимы, операция завершается ошибкой без записи файла.
 При успешной замене сохраняются исходные BOM, EOL, XML declaration, стиль self-closing
 элементов и наличие завершающего перевода строки.
+
+`upsert-predefined` и `remove-predefined` изменяют только
+`Ext/Predefined.xml` существующего `Catalog`, `ChartOfAccounts`,
+`ChartOfCharacteristicTypes` или `ChartOfCalculationTypes`. Поле `id`
+обязательно и остаётся стабильным; прочие владельцы получают
+`unsupported_operation`.
+
+Общие ключи `upsert-predefined`: `id`, `name`, `code`, `description`.
+Дополнительно допустимы: `isFolder` у `Catalog` и
+`ChartOfCharacteristicTypes`; `accountType`, `offBalance`, `order` у
+`ChartOfAccounts`; `actionPeriodIsBase` у `ChartOfCalculationTypes`.
 
 ### Свойства объекта — [properties-reference.md](properties-reference.md)
 

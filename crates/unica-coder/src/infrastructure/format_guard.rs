@@ -1021,7 +1021,7 @@ fn handler_resolved_format_paths(
             }
             "dcs-edit" | "dcs-validate" => resolve_dcs_validate_path(args, context).ok(),
             "mxl-validate" => resolve_mxl_validate_path(args, context).ok(),
-            "role-info" | "role-validate" => resolve_role_read_rights_path(args, context).ok(),
+            "role-edit" | "role-info" | "role-validate" => resolve_role_read_rights_path(args, context).ok(),
             _ => None,
         };
     let paths = resolved.or(fallback).into_iter().collect::<Vec<_>>();

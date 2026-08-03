@@ -16921,6 +16921,12 @@ fn edit_meta_with_mode(
     context: &WorkspaceContext,
     dry_run: bool,
 ) -> MetaEditExecution {
+    if matches!(
+        string_arg(args, &["operation", "Operation"]),
+        Some("upsert-predefined" | "remove-predefined")
+    ) {
+        return edit_predefined_data(args, context, dry_run);
+    }
     let edit_result = (|| -> Result<(MetaEditData, PathBuf, bool, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
@@ -17119,6 +17125,136 @@ fn edit_meta_with_mode(
             data: None,
         },
     }
+}
+
+fn edit_predefined_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    dry_run: bool,
+) -> MetaEditExecution {
+    let result = (|| -> Result<(MetaEditData, PathBuf, bool), String> {
+        let operation = string_arg(args, &["operation", "Operation"]).expect("checked by caller");
+        let object_path_raw = required_path(args, OBJECT_PATH, "ObjectPath")?;
+        let object_path = resolve_meta_edit_object_path(&object_path_raw, &context.cwd)?;
+        let object_xml = fs::read_to_string(&object_path)
+            .map_err(|error| format!("failed to read {}: {error}", object_path.display()))?;
+        let (kind, name) = meta_edit_object_identity(object_xml.trim_start_matches('\u{feff}'))?;
+        let root_type = match kind.as_str() {
+            "Catalog" => "CatalogPredefinedItems",
+            "ChartOfAccounts" => "ChartOfAccountsPredefinedItems",
+            "ChartOfCharacteristicTypes" => "PlanOfCharacteristicKindPredefinedItems",
+            "ChartOfCalculationTypes" => "CalculationTypePredefinedItems",
+            _ => return Err(format!("unsupported_operation: {kind} does not own predefined data")),
+        };
+        let value = string_arg(args, &["value", "Value"]).ok_or_else(|| format!("{operation} requires Value JSON"))?;
+        let definition: Value = serde_json::from_str(value)
+            .map_err(|error| format!("{operation} Value must be a JSON object: {error}"))?;
+        let id = definition.get("id").and_then(Value::as_str).filter(|value| is_valid_uuid(value))
+            .ok_or_else(|| format!("{operation} requires stable UUID field id"))?;
+        let predefined_path = object_path.parent().unwrap_or_else(|| Path::new("")) .join("Ext/Predefined.xml");
+        let original = match fs::read(&predefined_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(format!("failed to read {}: {error}", predefined_path.display())),
+        };
+        let before = String::from_utf8(original.clone()).map_err(|error| format!("failed to read {}: {error}", predefined_path.display()))?;
+        let mut after = if before.is_empty() {
+            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"{root_type}\" version=\"2.20\">\n</PredefinedData>\n")
+        } else { before.trim_start_matches('\u{feff}').to_string() };
+        validate_predefined_root(&after, root_type)?;
+        let marker = format!("<Item id=\"{id}\"");
+        if operation == "remove-predefined" {
+            if let Some(start) = after.find(&marker) {
+                let end = after[start..].find("</Item>").ok_or_else(|| format!("malformed predefined item {id}"))? + start + "</Item>".len();
+                after.replace_range(start..end, "");
+            }
+        } else {
+            let item_name = definition.get("name").and_then(Value::as_str).filter(|value| !value.is_empty())
+                .ok_or_else(|| "upsert-predefined requires name".to_string())?;
+            let code = definition.get("code").and_then(Value::as_str).unwrap_or("");
+            let description = definition.get("description").and_then(Value::as_str).unwrap_or("");
+            let type_specific = match kind.as_str() {
+                "Catalog" | "ChartOfCharacteristicTypes" => {
+                    format!("\n\t\t<IsFolder>{}</IsFolder>", definition.get("isFolder").and_then(Value::as_bool).unwrap_or(false))
+                }
+                "ChartOfAccounts" => format!(
+                    "\n\t\t<AccountType>{}</AccountType>\n\t\t<OffBalance>{}</OffBalance>\n\t\t<Order>{}</Order>\n\t\t<AccountingFlags/>\n\t\t<ExtDimensionTypes/>",
+                    escape_xml(definition.get("accountType").and_then(Value::as_str).unwrap_or("ActivePassive")),
+                    definition.get("offBalance").and_then(Value::as_bool).unwrap_or(false),
+                    escape_xml(definition.get("order").and_then(Value::as_str).unwrap_or("")),
+                ),
+                "ChartOfCalculationTypes" => format!(
+                    "\n\t\t<ActionPeriodIsBase>{}</ActionPeriodIsBase>",
+                    definition.get("actionPeriodIsBase").and_then(Value::as_bool).unwrap_or(false),
+                ),
+                _ => unreachable!("owner was validated above"),
+            };
+            if let Some(start) = after.find(&marker) {
+                let end = after[start..].find("</Item>").ok_or_else(|| format!("malformed predefined item {id}"))? + start + "</Item>".len();
+                let mut existing = after[start..end].to_string();
+                update_predefined_item_fields(&mut existing, &kind, &definition)?;
+                after.replace_range(start..end, &existing);
+            } else {
+                let item = format!("\t<Item id=\"{}\">\n\t\t<Name>{}</Name>\n\t\t<Code>{}</Code>\n\t\t<Description>{}</Description>{type_specific}\n\t</Item>", escape_xml(id), escape_xml(item_name), escape_xml(code), escape_xml(description));
+                let end = after.rfind("</PredefinedData>").ok_or_else(|| "malformed PredefinedData root".to_string())?;
+                after.insert_str(end, &format!("{item}\n"));
+            }
+        }
+        validate_predefined_root(&after, root_type)?;
+        let bytes = meta_edit_preserve_source_format(&after, MetaEditSourceFormat { has_bom: original.starts_with(b"\xef\xbb\xbf") || original.is_empty(), eol: meta_edit_source_eol(if before.is_empty() { &after } else { &before }) });
+        let changed = bytes != original;
+        if changed && !dry_run {
+            let mut transaction = CompileTransaction::new();
+            transaction.create_or_replace_bytes(&predefined_path, bytes)?;
+            transaction.commit_with_post_validation(|| {
+                let published = fs::read_to_string(&predefined_path).map_err(|error| format!("failed to read {}: {error}", predefined_path.display()))?;
+                validate_predefined_root(published.trim_start_matches('\u{feff}'), root_type)
+            })?;
+        }
+        Ok((MetaEditData { object_kind: kind, object_name: name, changed, counts: MetaEditCountsData { added: usize::from(changed && operation == "upsert-predefined" && !before.contains(&marker)), removed: usize::from(changed && operation == "remove-predefined"), modified: usize::from(changed && operation == "upsert-predefined" && before.contains(&marker)) }, diff: None }, predefined_path, changed))
+    })();
+    match result {
+        Ok((data, path, changed)) => MetaEditExecution { outcome: AdapterOutcome { ok: true, summary: if dry_run { "dry run: unica.meta.edit planned predefined data edit" } else { "unica.meta.edit completed predefined data edit" }.to_string(), changes: changed.then(|| format!("{} {}", if dry_run { "would update" } else { "updated" }, path.display())).into_iter().collect(), warnings: Vec::new(), errors: Vec::new(), artifacts: vec![path.display().to_string()], stdout: None, stderr: None, command: None }, data: Some(data) },
+        Err(error) => MetaEditExecution { outcome: AdapterOutcome { ok: false, summary: "unica.meta.edit failed predefined data edit".to_string(), changes: Vec::new(), warnings: Vec::new(), errors: vec![error.clone()], artifacts: Vec::new(), stdout: None, stderr: Some(format!("{error}\n")), command: None }, data: None },
+    }
+}
+
+fn validate_predefined_root(xml: &str, expected_type: &str) -> Result<(), String> {
+    let document = Document::parse(xml).map_err(|error| format!("Predefined.xml parse error: {error}"))?;
+    let root = document.root_element();
+    if root.tag_name().name() != "PredefinedData" || root.tag_name().namespace() != Some("http://v8.1c.ru/8.3/xcf/predef") || root.attribute(("http://www.w3.org/2001/XMLSchema-instance", "type")) != Some(expected_type) || root.attribute("version") != Some("2.20") {
+        return Err(format!("unsupported_operation: invalid Predefined.xml root for {expected_type}"));
+    }
+    Ok(())
+}
+
+/// Updates only caller-selected direct children of an existing item. Unknown
+/// fields, account flags, subconto and child items are intentionally retained.
+fn update_predefined_item_fields(item: &mut String, kind: &str, definition: &Value) -> Result<(), String> {
+    let object = definition.as_object().ok_or_else(|| "upsert-predefined Value must be an object".to_string())?;
+    for (json_key, xml_tag, boolean) in [
+        ("name", "Name", false), ("code", "Code", false), ("description", "Description", false),
+        ("isFolder", "IsFolder", true), ("accountType", "AccountType", false),
+        ("offBalance", "OffBalance", true), ("order", "Order", false),
+        ("actionPeriodIsBase", "ActionPeriodIsBase", true),
+    ] {
+        let Some(value) = object.get(json_key) else { continue; };
+        if matches!(json_key, "isFolder") && !matches!(kind, "Catalog" | "ChartOfCharacteristicTypes")
+            || matches!(json_key, "accountType" | "offBalance" | "order") && kind != "ChartOfAccounts"
+            || json_key == "actionPeriodIsBase" && kind != "ChartOfCalculationTypes" {
+            return Err(format!("unsupported_operation: {json_key} is not valid for {kind}"));
+        }
+        let rendered = if boolean {
+            value.as_bool().ok_or_else(|| format!("upsert-predefined {json_key} must be boolean"))?.to_string()
+        } else {
+            value.as_str().ok_or_else(|| format!("upsert-predefined {json_key} must be string"))?.to_string()
+        };
+        if !replace_first_xml_element_text(item, xml_tag, &rendered) {
+            let end = item.rfind("</Item>").ok_or_else(|| "malformed predefined item".to_string())?;
+            item.insert_str(end, &format!("\n\t\t<{xml_tag}>{}</{xml_tag}>", escape_xml(&rendered)));
+        }
+    }
+    Ok(())
 }
 
 /// Returns a verified diff or records a non-fatal renderer diagnostic. A
@@ -20240,6 +20376,46 @@ pub(crate) fn invoke_mutation(
         "meta-edit" => Some(edit_meta(args, context)),
         "meta-remove" => Some(remove_metadata_object(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod predefined_data_tests {
+    use super::*;
+
+    #[test]
+    fn predefined_root_accepts_each_supported_owner_type() {
+        for kind in [
+            "CatalogPredefinedItems",
+            "ChartOfAccountsPredefinedItems",
+            "PlanOfCharacteristicKindPredefinedItems",
+            "CalculationTypePredefinedItems",
+        ] {
+            let xml = format!(
+                "<PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"{kind}\" version=\"2.20\"/>"
+            );
+            validate_predefined_root(&xml, kind).unwrap();
+        }
+    }
+
+    #[test]
+    fn predefined_root_rejects_owner_type_mismatch() {
+        let xml = "<PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"CatalogPredefinedItems\" version=\"2.20\"/>";
+        assert!(validate_predefined_root(xml, "CalculationTypePredefinedItems").is_err());
+    }
+
+    #[test]
+    fn predefined_update_keeps_account_flags_subconto_and_children() {
+        let mut item = "<Item id=\"c7d2e6fc-3824-4b56-b4be-ae6be4944c0e\"><Name>Old</Name><Code>001</Code><AccountingFlags><Flag>old</Flag></AccountingFlags><ExtDimensionTypes><ExtDimensionType name=\"x\"/></ExtDimensionTypes><ChildItems><Item id=\"d7d2e6fc-3824-4b56-b4be-ae6be4944c0e\"><Name>Child</Name></Item></ChildItems></Item>".to_string();
+        update_predefined_item_fields(
+            &mut item,
+            "ChartOfAccounts",
+            &json!({"id":"c7d2e6fc-3824-4b56-b4be-ae6be4944c0e", "name":"New", "offBalance":true}),
+        ).unwrap();
+        assert!(item.contains("<Name>New</Name>"), "{item}");
+        assert!(item.contains("<AccountingFlags><Flag>old</Flag></AccountingFlags>"), "{item}");
+        assert!(item.contains("<ExtDimensionType name=\"x\"/>"), "{item}");
+        assert!(item.contains("<Name>Child</Name>"), "{item}");
     }
 }
 

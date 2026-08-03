@@ -901,8 +901,9 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 
 Корень — `PredefinedData` в пространстве имён `http://v8.1c.ru/8.3/xcf/predef`
 (не `MDClasses`), с обязательным `version="2.20"`. `xsi:type` зависит от вида
-владельца: на выгрузках 8.3.27.2074 подтверждены `CatalogPredefinedItems` и
-`PlanOfCharacteristicKindPredefinedItems`. Расширения используют тот же корень —
+владельца: `CatalogPredefinedItems`, `ChartOfAccountsPredefinedItems`,
+`PlanOfCharacteristicKindPredefinedItems` и `CalculationTypePredefinedItems`.
+Расширения используют тот же корень —
 см. [1c-extension-spec.md § 8](1c-extension-spec.md).
 
 ---
