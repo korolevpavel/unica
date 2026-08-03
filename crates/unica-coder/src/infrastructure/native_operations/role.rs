@@ -2061,9 +2061,11 @@ pub(crate) fn invoke_mutation(
     }
 }
 
-/// Changes exactly one <right> node while leaving the rest of Rights.xml intact.
-/// The narrow string surgery is deliberate: reserializing the document would
-/// reorder or erase comments and whitespace in an existing role.
+/// Changes one role right while leaving unrelated Rights.xml content intact.
+/// `Use=false` for a data processor is a platform-level cascade: the
+/// Designer removes the whole object block, including its dependent `View`
+/// right. The narrow string surgery is deliberate: reserializing the document
+/// would reorder or erase comments and whitespace in an existing role.
 pub(crate) fn preview_role_edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -2187,9 +2189,15 @@ fn role_edit_right_xml(
     value: &str,
 ) -> Result<String, String> {
     let object_marker = format!("<name>{}</name>", escape_xml(object_name));
-    let object_name_at = text
-        .find(&object_marker)
-        .ok_or_else(|| format!("role.edit target object not found: {object_name}"))?;
+    let Some(object_name_at) = text.find(&object_marker) else {
+        if value == "false"
+            && right_name == "Use"
+            && matches!(role_validate_object_type(object_name), "DataProcessor")
+        {
+            return Ok(text.to_string());
+        }
+        return Err(format!("role.edit target object not found: {object_name}"));
+    };
     let object_start = text[..object_name_at]
         .rfind("<object>")
         .ok_or_else(|| format!("role.edit malformed object: {object_name}"))?;
@@ -2198,6 +2206,32 @@ fn role_edit_right_xml(
         .ok_or_else(|| format!("role.edit malformed object: {object_name}"))?;
     let object_end = object_name_at + object_end_relative;
     let object = &text[object_start..object_end];
+    if value == "false"
+        && right_name == "Use"
+        && matches!(role_validate_object_type(object_name), "DataProcessor")
+    {
+        let line_start = text[..object_start]
+            .rfind('\n')
+            .map(|index| index + '\n'.len_utf8())
+            .unwrap_or(0);
+        let removal_start = if text[line_start..object_start]
+            .chars()
+            .all(char::is_whitespace)
+        {
+            line_start
+        } else {
+            object_start
+        };
+        let mut removal_end = object_end + "</object>".len();
+        if text[removal_end..].starts_with("\r\n") {
+            removal_end += "\r\n".len();
+        } else if text[removal_end..].starts_with('\n') {
+            removal_end += '\n'.len_utf8();
+        }
+        let mut output = text.to_string();
+        output.replace_range(removal_start..removal_end, "");
+        return Ok(output);
+    }
     let right_marker = format!("<name>{}</name>", escape_xml(right_name));
     if let Some(right_name_at) = object.find(&right_marker) {
         let right_start = object[..right_name_at]
@@ -2968,6 +3002,30 @@ mod role_compile_contract_tests {
         );
         assert_eq!(
             role_edit_right_xml(&edited, "Catalog.Demo", "Delete", "false").unwrap(),
+            edited
+        );
+    }
+
+    #[test]
+    fn role_edit_removes_data_processor_when_use_is_disabled() {
+        let source = concat!(
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" version=\"2.20\">\r\n",
+            "\t<object>\r\n\t\t<name>DataProcessor.Demo</name>\r\n",
+            "\t\t<right><name>Use</name><value>true</value></right>\r\n",
+            "\t\t<right><name>View</name><value>true</value></right>\r\n\t</object>\r\n",
+            "\t<object><name>Catalog.Keep</name><right><name>Read</name><value>true</value></right></object>\r\n",
+            "</Rights>\r\n"
+        );
+
+        let edited = role_edit_right_xml(source, "DataProcessor.Demo", "Use", "false").unwrap();
+
+        assert!(!edited.contains("DataProcessor.Demo"), "{edited}");
+        assert!(!edited.contains("<name>Use</name>"), "{edited}");
+        assert!(!edited.contains("<name>View</name>"), "{edited}");
+        assert!(edited.contains("Catalog.Keep"), "{edited}");
+        assert!(edited.ends_with("</object>\r\n</Rights>\r\n"), "{edited}");
+        assert_eq!(
+            role_edit_right_xml(&edited, "DataProcessor.Demo", "Use", "false").unwrap(),
             edited
         );
     }
