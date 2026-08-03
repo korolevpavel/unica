@@ -3678,7 +3678,7 @@ mod tests {
             "unica.role.compile",
             "unica.role.validate",
         ];
-        const REPO_OWNED_NATIVE_TOOLS: &[&str] = &["unica.support.edit"];
+        const REPO_OWNED_NATIVE_TOOLS: &[&str] = &["unica.role.edit", "unica.support.edit"];
         // A tool that answers with typed data has no prose left for the parity
         // stand to compare, so it is covered by its own crate tests instead
         // (ADR-0023).
@@ -5689,7 +5689,7 @@ mod tests {
                     match policy {
                         SupportGuardPolicy::HandlerResolved { requirement } => {
                             assert!(
-                                matches!(operation, "code-patch" | "xdto-edit"),
+                                matches!(operation, "code-patch" | "role-edit" | "xdto-edit"),
                                 "{operation} unexpectedly delegates support resolution"
                             );
                             assert_eq!(requirement, SupportGuardRequirement::Editable);
@@ -5750,6 +5750,7 @@ mod tests {
                 "meta-remove",
                 "mxl-compile",
                 "role-compile",
+                "role-edit",
                 "subsystem-compile",
                 "subsystem-edit",
                 "template-add",
@@ -5894,6 +5895,11 @@ mod tests {
                 "role-compile",
                 &["OutputDir", "outputDir"][..],
                 "DeclaredArgs",
+            ),
+            (
+                "role-edit",
+                &["RightsPath", "rightsPath", "Path", "path"][..],
+                "HandlerResolved",
             ),
         ];
 

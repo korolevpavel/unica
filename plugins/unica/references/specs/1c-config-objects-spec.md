@@ -906,6 +906,23 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 Расширения используют тот же корень —
 см. [1c-extension-spec.md § 8](1c-extension-spec.md).
 
+У элементов плана счетов после общих `Name`, `Code`, `Description` идут
+`AccountType`, `OffBalance`, `Order`, `AccountingFlags`,
+`ExtDimensionTypes` и, при наличии подчинённых счетов, `ChildItems`. Каждый
+`AccountingFlags/Flag` хранит булево значение и полный идентификатор флага в
+атрибуте `ref`. Подконто имеет форму
+`ExtDimensionTypes/ExtDimensionType[@name]/Turnover/AccountingFlags`.
+
+У элемента плана видов характеристик до `IsFolder` может находиться `Type` с
+одним или несколькими `v8:Type`; имя типа использует пространство текущей
+конфигурации, например `d4p1:CatalogRef.ОсновныеСредства`. У элемента плана
+видов расчёта специфичное свойство — `ActionPeriodIsBase`.
+
+Адресный writer обязан находить `Predefined.xml` по пути
+`<Категория>/<ИмяОбъекта>/Ext/Predefined.xml`, а не рядом с файлом
+`<Категория>/<ИмяОбъекта>.xml`. При изменении одного `Item` вложенные
+`ChildItems` и непереданные специфичные свойства сохраняются.
+
 ---
 
 ## 8. Документы (Documents)

@@ -121,8 +121,15 @@ Batch через `;;` во всех операциях. Подробный си�
 
 Общие ключи `upsert-predefined`: `id`, `name`, `code`, `description`.
 Дополнительно допустимы: `isFolder` у `Catalog` и
-`ChartOfCharacteristicTypes`; `accountType`, `offBalance`, `order` у
+`ChartOfCharacteristicTypes`; `types` у `ChartOfCharacteristicTypes` — массив
+имён типов без префикса (`"CatalogRef.ОсновныеСредства"`); `accountType`,
+`offBalance`, `order`, `accountingFlags`, `extDimensionTypes` у
 `ChartOfAccounts`; `actionPeriodIsBase` у `ChartOfCalculationTypes`.
+
+`accountingFlags` — объект `{ "полныйПутьФлага": true | false }`.
+`extDimensionTypes` — массив объектов с обязательным `name`, необязательным
+`turnover` и таким же `accountingFlags`. При обновлении меняются только явно
+переданные свойства: непереданные флаги, субконто и `ChildItems` сохраняются.
 
 ### Свойства объекта — [properties-reference.md](properties-reference.md)
 
