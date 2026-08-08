@@ -5,11 +5,13 @@ pub(crate) mod code_intelligence;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
 pub(crate) mod metadata_kinds;
+pub(crate) mod metadata_operations;
 pub mod native_operations;
 pub mod path_policy;
 pub(crate) mod platform;
 pub(crate) mod platform_xml_owner;
 pub(crate) mod platform_xml_resources;
+pub(crate) mod platform_xml_roots;
 // This foundational provider is consumed by the public migration in the next slice.
 #[allow(dead_code)]
 pub(crate) mod platform_xml_source_targets;

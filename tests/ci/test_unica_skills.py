@@ -60,11 +60,10 @@ IN_SCOPE_TOOLS = {
     "cfe-validate": "unica.cfe.validate",
     "epf-init": "unica.epf.init",
     "erf-init": "unica.erf.init",
-    "meta-compile": "unica.meta.compile",
+    "meta-add": "unica.meta.add",
     "meta-edit": "unica.meta.edit",
     "meta-info": "unica.meta.info",
     "meta-remove": "unica.meta.remove",
-    "meta-validate": "unica.meta.validate",
     "form-add": "unica.form.add",
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
@@ -101,7 +100,6 @@ SCENARIO_SKILLS = {
         "unica.project.map",
         "unica.subsystem.info",
         "unica.meta.info",
-        "unica.meta.profile",
         "unica.standards.search",
         "unica.standards.explain",
         "unica.runtime.execute",
@@ -110,7 +108,7 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.definition",
         "unica.code.outline",
-        "unica.meta.profile",
+        "unica.meta.info",
         "unica.project.map",
     ],
     "code-diagnostics": [
@@ -125,7 +123,7 @@ SCENARIO_SKILLS = {
         "unica.code.definition",
         "unica.code.outline",
         "unica.code.diagnostics",
-        "unica.meta.profile",
+        "unica.meta.info",
         "unica.standards.explain",
         "unica.standards.search",
         "unica.project.map",
@@ -136,7 +134,6 @@ SCENARIO_SKILLS = {
         "unica.code.outline",
         "unica.dcs.info",
         "unica.meta.info",
-        "unica.meta.profile",
         "unica.standards.search",
         "unica.standards.explain",
         "unica.runtime.execute",
@@ -163,7 +160,7 @@ SCENARIO_SKILLS = {
     "integration-implement": [
         "unica.project.map",
         "unica.meta.info",
-        "unica.meta.compile",
+        "unica.meta.add",
         "unica.meta.edit",
         "unica.code.search",
         "unica.standards.search",
@@ -208,7 +205,6 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.outline",
         "unica.meta.info",
-        "unica.meta.profile",
         "unica.dcs.info",
         "unica.code.diagnostics",
         "unica.standards.search",
@@ -253,6 +249,86 @@ SCENARIO_SKILLS = {
         "unica.source.read",
         "unica.source.locate",
     ],
+    "document-posting": [
+        "unica.project.map",
+        "unica.meta.info",
+        "unica.meta.edit",
+        "unica.code.definition",
+        "unica.code.outline",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "register-design": [
+        "unica.project.map",
+        "unica.meta.info",
+        "unica.meta.add",
+        "unica.meta.edit",
+        "unica.code.search",
+        "unica.dcs.info",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "object-events": [
+        "unica.project.map",
+        "unica.meta.info",
+        "unica.code.search",
+        "unica.code.definition",
+        "unica.code.outline",
+        "unica.code.graph",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "form-events": [
+        "unica.project.map",
+        "unica.form.info",
+        "unica.form.edit",
+        "unica.meta.info",
+        "unica.code.outline",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "module-placement": [
+        "unica.project.map",
+        "unica.meta.info",
+        "unica.meta.add",
+        "unica.subsystem.info",
+        "unica.code.graph",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "metadata-modeling": [
+        "unica.project.map",
+        "unica.cf.info",
+        "unica.meta.info",
+        "unica.meta.add",
+        "unica.meta.edit",
+        "unica.subsystem.info",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "transactions-locks": [
+        "unica.project.map",
+        "unica.code.search",
+        "unica.code.outline",
+        "unica.code.graph",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.meta.info",
+        "unica.runtime.execute",
+    ],
+    "object-locks": [
+        "unica.project.map",
+        "unica.code.search",
+        "unica.code.graph",
+        "unica.code.patch",
+        "unica.form.info",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
 }
 
 SCENARIO_REQUIRED_TOKENS = {
@@ -287,6 +363,138 @@ SCENARIO_REQUIRED_TOKENS = {
     "db-performance": ["SQL/DBMS trace", "индексы", "блокировки", "TEMPDB/WAL"],
     "security-auth-crypto": ["OpenID", "сертификаты", "CryptoPro", "секреты"],
     "data-separation": ["tenant-boundaries", "RLS", "разделители", "безопасные запросы"],
+    # v8std governs posting shape, and the two rules an agent gets wrong by
+    # default are std450 (the platform writes the sets, not the handler) and
+    # std661 (control queries run *after* the controlled write, not before).
+    # Guidance that drops either one reproduces the textbook antipattern.
+    "document-posting": [
+        "RegisterRecords",
+        "RealTimePosting",
+        "RegisterRecordsDeletion",
+        "РежимПроведенияДокумента.Оперативный",
+        "БлокироватьДляИзменения",
+        # Lock order itself is owned by transactions-locks; what this skill
+        # must not lose is the deferral to it.
+        "transactions-locks",
+        "std450",
+        "std661",
+        "АПК:105",
+        "АПК:226",
+    ],
+    # std664 (separate totals for write concurrency) and std733 (no separation
+    # for the cheapest balance read) pull opposite ways. Guidance that names
+    # only one of them turns a trade-off into a false rule, so both ids and the
+    # dimension/resource split they hang off stay pinned here.
+    "register-design": [
+        "RegisterType",
+        "EnableTotalsSplitting",
+        "EnableTotalsSliceLast",
+        "WriteMode",
+        "DenyIncompleteValues",
+        "std664",
+        "std733",
+        "std708",
+        "std792",
+        "АПК:229",
+    ],
+    # Both cross-cutting rules are ones a handler silently violates: std773
+    # (the exchange guard, which subscriptions forget as often as modules) and
+    # std686 (assigning anything but Истина to Отказ clears another
+    # subscriber's refusal). std463's remove-from-ПроверяемыеРеквизиты shape is
+    # pinned because the inverse reads as correct and hides the condition.
+    "object-events": [
+        "ОбменДанными.Загрузка",
+        "ПроверяемыеРеквизиты",
+        "std773",
+        "std686",
+        "std463",
+        "std465",
+        "АПК:75",
+        "АПК:144",
+    ],
+    # The form module is the one place directives are mandatory (std439) and
+    # the one place a careless line costs a round trip (std487). Both are
+    # invisible in review without being named. `Подключаемый_` is pinned
+    # because nothing else in the surface mentions it.
+    "form-events": [
+        "&НаСервереБезКонтекста",
+        "Подключаемый_",
+        "Параметры.Свойство()",
+        "std439",
+        "std487",
+        "std492",
+        "std741",
+        "АПК:547",
+        "АПК:1410",
+    ],
+    # std469 admits exactly four flag combinations and std679 makes `Вызов
+    # сервера` an exposure decision rather than a convenience — the flag gets
+    # set to make a call compile otherwise. The scope line is pinned because
+    # this skill and api-design describe adjacent halves of one subject.
+    "module-placement": [
+        "ВызовСервера",
+        "КлиентСервер",
+        "ПовтИсп",
+        "Вызов сервера",
+        "std469",
+        "std486",
+        "std679",
+        "std724",
+        "std746",
+        "АПК:125",
+        "api-design",
+    ],
+    # The class choice hangs on who may change the value set, and the
+    # enumeration-versus-characteristic-types mistake is the one that costs a
+    # migration later. std728's two composite rules are pinned because
+    # `ЛюбаяСсылка` and a mixed type set both read as convenient shortcuts.
+    "metadata-modeling": [
+        "ЛюбаяСсылка",
+        "ХранилищеЗначения",
+        "ОбновлениеПредопределенныхДанных",
+        "std432",
+        "std697",
+        "std704",
+        "std728",
+        "АПК:1329",
+        "АПК:1330",
+        "register-design",
+    ],
+    # This skill is the owner four others defer to, so the deferral is pinned
+    # alongside the rules. std783's "an exception does not roll back" is the
+    # single most load-bearing fact here: code written without it looks correct
+    # and leaves the transaction open. std648's definition of a responsible
+    # read is what decides whether a lock is needed at all.
+    "transactions-locks": [
+        "std648",
+        "std783",
+        "std460",
+        "std659",
+        "Заблокировать()",
+        "ОтменитьТранзакцию",
+        "lock order",
+        "does not roll the transaction back",
+        "АПК:1319",
+        "АПК:1327",
+        "Scope boundary",
+        # A failed object lock is the documented exception to the rollback
+        # reflex, so the two owners must keep pointing at each other.
+        "object-locks",
+    ],
+    # Unlike the rest of this layer, the behaviour here is platform behaviour,
+    # not a standards cluster: v8std carries one rule (std490) and the 8.3.27
+    # Developer Guide carries the mechanism. Two facts are load-bearing and
+    # counter-intuitive: the pessimistic lock stops other *locks*, not other
+    # writes, and a failed object lock does not require a rollback.
+    "object-locks": [
+        "std490",
+        "cooperative",
+        "ЗаблокироватьДанныеДляРедактирования",
+        "form id",
+        "Optimistic locking guarantees only non-overwriting",
+        "does not prevent the object in the database",
+        "transactions-locks",
+    ],
     "release-support": ["сравнение/объединение", "Поставка", "поддержка", "совместимость"],
     "source-access": [
         "предметн",
@@ -328,11 +536,10 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cfe-validate": ["ExtensionPath"],
     "epf-init": ["Name", "OutputDir", "FormName"],
     "erf-init": ["Name", "OutputDir", "FormName"],
-    "meta-compile": ["JsonPath", "OutputDir"],
-    "meta-edit": ["ObjectPath", "Operation", "Value"],
+    "meta-add": ["sourceSet", "kind", "name"],
+    "meta-edit": ["sourceSet", "metadataPath", "operations"],
     "meta-info": ["sourceSet", "metadataPath"],
-    "meta-remove": ["ConfigDir", "Object"],
-    "meta-validate": ["ObjectPath"],
+    "meta-remove": ["sourceSet", "metadataPath", "dryRun"],
     "form-add": ["ObjectPath", "FormName", "Purpose"],
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
@@ -371,10 +578,10 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cfe-init": 6,
     "cfe-patch-method": 4,
     "cfe-validate": 2,
-    "meta-edit": 11,
-    "meta-info": 14,
-    "meta-remove": 5,
-    "meta-validate": 2,
+    "meta-add": 1,
+    "meta-edit": 2,
+    "meta-info": 5,
+    "meta-remove": 1,
     "form-add": 6,
     "form-compile": 4,
     "form-validate": 2,
@@ -403,7 +610,6 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "erf-init": {"unica.runtime.execute"},
     "form-compile": {"unica.form.info", "unica.form.validate"},
     "interface-edit": {"unica.interface.validate"},
-    "meta-edit": {"unica.meta.info", "unica.meta.validate"},
     "role-compile": {"unica.role.info", "unica.role.validate"},
     "dcs-compile": {"unica.dcs.info", "unica.dcs.validate"},
     "dcs-edit": {"unica.dcs.info", "unica.dcs.validate"},
@@ -459,18 +665,20 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Context": "НаКлиенте"',
         '"IsFunction": false',
     ],
+    "meta-add": [
+        '"kind": "Catalog"',
+        '"name": "НовыйСправочник"',
+        '"dryRun": true',
+    ],
     "meta-edit": [
-        '"Value": "Комментарий: Строка(200) ;; Сумма: Число(15,2) | index"',
-        '"Value": "Значение: Строка + Число(15,2) + Дата + CatalogRef.Контрагенты"',
-        '"Operation": "add-ts"',
-        '"Value": "Товары: Ном: CatalogRef.Ном | req, Кол: Число(15,3), Цена: Число(15,2)"',
-        '"Operation": "remove-attribute"',
-        '"Operation": "modify-attribute"',
-        '"Operation": "modify-property"',
-        '"Operation": "set-owners"',
-        '"Value": "Catalog.Контрагенты ;; Catalog.Организации"',
-        '"name": "unica.meta.validate"',
-        '"name": "unica.meta.info"',
+        '"op": "setProperties"',
+        '"op": "add"',
+        '"collection": "attributes"',
+        '"allowedLength": "variable"',
+        '"op": "editRelations"',
+        '"relation": "basedOn"',
+        '"mode": "replace"',
+        '"targets": [',
     ],
     # `Name` and `Mode` were report selectors. The typed answer carries the
     # whole object, so the scenarios are preserved by the addresses they read,
@@ -483,10 +691,9 @@ SCENARIO_PRESERVING_TOKENS = {
         '"metadataPath": "DefinedType.GLN"',
     ],
     "meta-remove": [
-        '"Object": "Catalog.Устаревший"',
+        '"metadataPath": "Catalog.Устаревший"',
+        '`force: true`, `confirm: true`, `dryRun: false`',
         '"dryRun": true',
-        '"Force": true',
-        '"Object": "CommonModule.МойМодуль"',
     ],
     "form-add": [
         '"ObjectPath": "Documents/АвансовыйОтчет.xml"',
@@ -570,7 +777,9 @@ SCENARIO_PRESERVING_TOKENS = {
 # must not keep advertising them: the server would answer such a call with
 # "does not accept argument", so a leftover example is a broken instruction.
 SCENARIO_RETIRED_TOKENS = {
-    "meta-remove": ['"KeepFiles"', '"keepFiles"'],
+    "meta-add": ['"JsonPath"', '"OutputDir"', '"DefinitionFile"'],
+    "meta-edit": ['"ObjectPath"', '"Operation"', '"Value"', '"DefinitionFile"'],
+    "meta-remove": ['"ConfigDir"', '"Object"', '"Force"', '"KeepFiles"', '"keepFiles"'],
     "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
     "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
     "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
@@ -655,7 +864,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "cf-validate",
             "cfe-validate",
             "meta-info",
-            "meta-validate",
             "interface-validate",
             "subsystem-info",
             "subsystem-validate",
@@ -681,6 +889,170 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             / "unica_mcp_script_parity"
             / "unica_reference_models"
         )
+
+    def test_meta_skill_surface_is_exactly_four_typed_operations(self) -> None:
+        expected = {
+            "meta-info": "unica.meta.info",
+            "meta-add": "unica.meta.add",
+            "meta-edit": "unica.meta.edit",
+            "meta-remove": "unica.meta.remove",
+        }
+        actual = {
+            path.name
+            for path in self.skill_root().glob("meta-*")
+            if (path / "SKILL.md").is_file()
+        }
+
+        self.assertEqual(actual, set(expected))
+        for skill, tool in expected.items():
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("## MCP routing", text)
+                self.assertIn("MCP `unica`", text)
+                self.assertIn(tool, text)
+
+    def test_meta_examples_follow_final_typed_contracts(self) -> None:
+        documents = {
+            skill: (self.skill_root() / skill / "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+            for skill in ("meta-info", "meta-add", "meta-edit", "meta-remove")
+        }
+        calls = {
+            skill: [
+                json.loads(block)
+                for block in re.findall(r"```json\n(.*?)\n```", text, flags=re.S)
+                if '"method": "tools/call"' in block
+            ]
+            for skill, text in documents.items()
+        }
+
+        self.assertTrue(calls["meta-add"])
+        for call in calls["meta-add"]:
+            arguments = call["params"]["arguments"]
+            self.assertEqual(call["params"]["name"], "unica.meta.add")
+            self.assertTrue({"sourceSet", "kind", "name"}.issubset(arguments))
+            self.assertLessEqual(
+                set(arguments),
+                {"sourceSet", "kind", "name", "operations", "dryRun"},
+            )
+            if "operations" in arguments:
+                self.assertIsInstance(arguments["operations"], list)
+                self.assertTrue(arguments["operations"])
+                self.assertTrue(
+                    all(
+                        isinstance(operation, dict)
+                        for operation in arguments["operations"]
+                    )
+                )
+
+        self.assertTrue(calls["meta-edit"])
+        edit_operations = []
+        for call in calls["meta-edit"]:
+            arguments = call["params"]["arguments"]
+            self.assertEqual(call["params"]["name"], "unica.meta.edit")
+            self.assertEqual(
+                set(arguments) - {"sourceSet", "metadataPath", "operations", "dryRun"},
+                set(),
+            )
+            self.assertIsInstance(arguments["operations"], list)
+            self.assertTrue(arguments["operations"])
+            self.assertTrue(
+                all(isinstance(operation, dict) for operation in arguments["operations"])
+            )
+            edit_operations.extend(arguments["operations"])
+
+        self.assertEqual(
+            {operation.get("op") for operation in edit_operations},
+            {"setProperties", "add", "update", "remove", "editRelations"},
+        )
+        for operation in edit_operations:
+            with self.subTest(edit_operation=operation.get("op")):
+                allowed_fields = {
+                    "setProperties": {"op", "values"},
+                    "add": {"op", "collection", "scope", "elements"},
+                    "update": {"op", "collection", "scope", "elements"},
+                    "remove": {"op", "collection", "scope", "names"},
+                    "editRelations": {"op", "relation", "mode", "targets"},
+                }[operation["op"]]
+                self.assertLessEqual(set(operation), allowed_fields)
+
+        for scoped_operation in ("update", "remove"):
+            matching = [
+                operation
+                for operation in edit_operations
+                if operation.get("op") == scoped_operation
+            ]
+            self.assertTrue(matching)
+            self.assertTrue(
+                any(
+                    set(operation.get("scope", {})) == {"tabularSection"}
+                    and bool(operation["scope"]["tabularSection"])
+                    for operation in matching
+                )
+            )
+
+        info = documents["meta-info"]
+        # `meta.info` no longer consults an index, so the fields that only made
+        # sense for a possibly-stale provider are gone from the answer and must
+        # not be promised by the prose either.
+        for token in ("`validation`", "status", "diagnostics", "usage", "predefinedItems"):
+            with self.subTest(info_token=token):
+                self.assertIn(token, info)
+        for retired in ("freshness", "completeness", "soft-fail", "related"):
+            with self.subTest(info_retired=retired):
+                self.assertNotIn(retired, info)
+        self.assertNotIn("`total`, `limit`", info)
+        self.assertTrue(
+            any("sections" not in call["params"]["arguments"] for call in calls["meta-info"])
+        )
+        self.assertTrue(
+            any(
+                call["params"]["arguments"].get("sections")
+                and 1 <= call["params"]["arguments"].get("limit", 0) <= 50
+                for call in calls["meta-info"]
+            )
+        )
+
+        for skill in ("meta-add", "meta-edit", "meta-info", "meta-remove"):
+            with self.subTest(skill=skill, contract="structured result"):
+                text = documents[skill]
+                self.assertIn("structuredContent", text)
+                self.assertIn("isError == !structuredContent.ok", text)
+                self.assertIn(
+                    "не является вторым контрактом", " ".join(text.split())
+                )
+
+        for skill in ("meta-add", "meta-edit", "meta-remove"):
+            with self.subTest(skill=skill, contract="preview effects"):
+                text = documents[skill]
+                self.assertIn("data.effects", text)
+                self.assertIn("полный XML", text)
+
+        remove = documents["meta-remove"]
+        self.assertIn("`sourceSet + metadataPath`", remove)
+        self.assertIn("`force: true`, `confirm: true`, `dryRun: false`", remove)
+
+    def test_prompt_visible_meta_routes_have_no_retired_contract_grammar(self) -> None:
+        prompt_documents = list(self.skill_root().glob("meta-*/**/*.md")) + [
+            self.repo_root() / "README.md",
+            self.repo_root() / "CLAUDE.md",
+            self.reference_root() / "platform" / "metadata-conventions.md",
+            self.skill_root() / "cf-edit" / "SKILL.md",
+            self.skill_root() / "cf-edit" / "reference.md",
+        ]
+        retired_routes = re.compile(
+            r"(?:/unica:|/)(?:meta-compile|meta-validate|meta-profile)\b|"
+            r"unica\.meta\.(?:compile|validate|profile)\b"
+        )
+        offenders = []
+        for path in prompt_documents:
+            text = path.read_text(encoding="utf-8")
+            if retired_routes.search(text):
+                offenders.append(path.relative_to(self.repo_root()).as_posix())
+        self.assertEqual(offenders, [])
 
     def test_in_scope_skills_route_to_single_unica_mcp(self) -> None:
         for skill, tool_name in IN_SCOPE_TOOLS.items():
@@ -778,16 +1150,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     "references/platform/compatibility-modes.md",
                     skill_text,
                 )
-
-        meta_edit_docs = [
-            self.skill_root() / "meta-edit" / "SKILL.md",
-            self.skill_root() / "meta-edit" / "child-operations.md",
-        ]
-        for doc_path in meta_edit_docs:
-            doc = doc_path.read_text(encoding="utf-8")
-            with self.subTest(path=doc_path.relative_to(self.repo_root())):
-                self.assertRegex(doc, r"не\s+новее `Version8_3_26`")
-                self.assertNotRegex(doc, r"`Version8_3_26`\s+и старше")
 
     def test_platform_evidence_is_not_routed_to_standards_tools(self) -> None:
         docs = list(self.skill_root().glob("**/*.md")) + list(
@@ -1310,18 +1672,38 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn(".ps1", meta_info)
         self.assertNotIn(".py", meta_info)
 
-    def test_meta_compile_tracks_upstream_choice_history_through_unica_boundary(self) -> None:
-        meta_compile = (self.skill_root() / "meta-compile" / "SKILL.md").read_text(
+    def test_meta_add_routes_minimal_creation_without_erasing_upstream_facts(self) -> None:
+        meta_add = (self.skill_root() / "meta-add" / "SKILL.md").read_text(
             encoding="utf-8"
         )
+        format_facts = (
+            self.reference_root() / "specs" / "1c-config-objects-spec.md"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("MCP `unica`", meta_compile)
-        self.assertIn("unica.meta.compile", meta_compile)
-        self.assertIn("choiceHistoryOnInput", meta_compile)
-        self.assertNotIn("CLAUDE_SKILL_DIR", meta_compile)
-        self.assertNotIn("powershell.exe", meta_compile)
-        self.assertNotIn(".ps1", meta_compile)
-        self.assertNotIn(".py", meta_compile)
+        self.assertIn("MCP `unica`", meta_add)
+        self.assertIn("unica.meta.add", meta_add)
+        self.assertNotIn("unica.meta.compile", meta_add)
+        self.assertNotIn('"JsonPath"', meta_add)
+        self.assertIn("ChoiceHistoryOnInput", format_facts)
+        self.assertNotIn("CLAUDE_SKILL_DIR", meta_add)
+        self.assertNotIn("powershell.exe", meta_add)
+        self.assertNotIn(".ps1", meta_add)
+        self.assertNotIn(".py", meta_add)
+
+    def test_top_level_skills_never_route_to_retired_meta_tools(self) -> None:
+        retired = {
+            "unica.meta.compile",
+            "unica.meta.profile",
+            "unica.meta.validate",
+        }
+        offenders = {
+            path.relative_to(self.repo_root()).as_posix(): sorted(
+                name for name in retired if name in path.read_text(encoding="utf-8")
+            )
+            for path in sorted(self.skill_root().glob("*/SKILL.md"))
+            if any(name in path.read_text(encoding="utf-8") for name in retired)
+        }
+        self.assertEqual(offenders, {})
 
     def test_support_state_reporting_is_documented_for_info_skills(self) -> None:
         for skill in (
@@ -1439,6 +1821,9 @@ Use `.claude/commands/xdto.md` as the execution route.
         v8project = (self.reference_root() / "tooling" / "v8project.md").read_text(
             encoding="utf-8"
         )
+        runtime_build = (
+            self.reference_root() / "tooling" / "runtime-build.md"
+        ).read_text(encoding="utf-8")
         v8_runner_docs = "\n".join(
             path.read_text(encoding="utf-8")
             for path in [
@@ -1464,6 +1849,11 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertIn("features", v8_runner_docs)
         self.assertNotRegex(v8project, r"(?m)^connection:")
         self.assertNotIn("mode=load|merge|update", v8project)
+        self.assertIn("tools.platform.version", runtime_build)
+        self.assertIn("tools.platform.path", runtime_build)
+        self.assertIn("v8project.local.yaml", runtime_build)
+        self.assertNotIn("V8_PATH", runtime_build)
+        self.assertNotIn("V8_BASE", runtime_build)
 
     def test_verified_applied_full_dump_documents_supported_hosts_and_verified_publication(
         self,
@@ -1598,6 +1988,39 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertRegex(text, r"Configuration.{0,120}Extension")
         self.assertIn("sourceSet", text)
         self.assertIn("metadataPath", text)
+
+    def test_code_patch_prompt_metadata_covers_every_public_operation(self) -> None:
+        """Prompt metadata names the published operations and only those.
+
+        `description` and `argument-hint` are what a host shows before the body
+        is ever read, so an operation missing there is invisible at the moment
+        of choosing the skill, and a retired one advertises a call that now
+        fails. The published enum is the source of truth; this keeps the two
+        from drifting apart in either direction.
+        """
+        path = self.skill_root() / "code-patch" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        published = ("insert", "replace")
+        retired = ("initialize",)
+
+        fields = {
+            field: match.group(1)
+            for field in ("description", "argument-hint")
+            if (match := re.search(rf"(?m)^{re.escape(field)}:\s*(.+)$", text))
+        }
+        self.assertEqual(set(fields), {"description", "argument-hint"})
+        for field, value in fields.items():
+            for operation in published:
+                with self.subTest(field=field, operation=operation):
+                    self.assertRegex(value, rf"\b{operation}\b")
+            for operation in retired:
+                with self.subTest(field=field, retired=operation):
+                    self.assertNotRegex(value, rf"\b{operation}\b")
+
+        # A selector-less insert is the whole point of the current surface, so
+        # the body must say where the content lands when the selector is absent.
+        self.assertRegex(text, r"(?is)`selector` is optional for `insert`")
+        self.assertIn("end of the module", text)
 
     def test_xdto_skill_uses_one_confirmed_info_preview_apply_mcp_flow(self) -> None:
         path = self.skill_root() / "xdto" / "SKILL.md"
@@ -1837,7 +2260,7 @@ Use `.claude/commands/xdto.md` as the execution route.
         }
         self.assertEqual(
             modelled_skills,
-            set(IN_SCOPE_TOOLS) - {"epf-init", "erf-init"},
+            set(IN_SCOPE_TOOLS) - {"epf-init", "erf-init", "meta-add", "meta-edit"},
         )
         allowed_suffixes = {".json", ".md", ".ps1", ".py"}
         for path in models_root.rglob("*"):

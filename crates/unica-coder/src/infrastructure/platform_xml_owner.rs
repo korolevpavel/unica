@@ -5,8 +5,13 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::METADATA_KIND_TAGS;
 use crate::infrastructure::native_operations::compile_transaction::{
     snapshot_directory_membership, CompileTransaction, DirectoryMembershipSelector,
+    DirectoryMembershipSnapshot,
 };
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::platform_xml_roots::{
+    platform_xml_owner_policy, platform_xml_publication_policy, PlatformXmlOwnerPolicy,
+    PlatformXmlPublicationPolicy,
+};
 use crate::infrastructure::project_sources::{
     discover_project_source_map_with_provenance, ProjectSourceMapProvenance,
 };
@@ -15,8 +20,7 @@ use crate::infrastructure::source_roots::{
     select_unique_deepest_source_set_match,
 };
 use roxmltree::Document;
-use std::collections::{BTreeMap, HashSet};
-use std::ffi::OsString;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -50,6 +54,23 @@ pub(crate) struct PlatformXmlOwner {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct PlatformXmlSourceSetOwnerEvidence {
+    version: Option<String>,
+    registrations: BTreeSet<(String, String)>,
+}
+
+impl PlatformXmlSourceSetOwnerEvidence {
+    pub(crate) fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+
+    pub(crate) fn registers(&self, kind: &str, name: &str) -> bool {
+        self.registrations
+            .contains(&(kind.to_string(), name.to_string()))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct PlatformXmlOwnerError {
     pub path: PathBuf,
     pub message: String,
@@ -65,7 +86,7 @@ enum PlatformXmlOwnerCandidateInput {
 pub(crate) struct PlatformXmlOwnerProvenance {
     source_map: ProjectSourceMapProvenance,
     candidates: BTreeMap<PathBuf, PlatformXmlOwnerCandidateInput>,
-    directory_memberships: BTreeMap<PathBuf, Vec<OsString>>,
+    directory_memberships: BTreeMap<PathBuf, DirectoryMembershipSnapshot>,
 }
 
 impl PlatformXmlOwnerProvenance {
@@ -74,9 +95,7 @@ impl PlatformXmlOwnerProvenance {
         for (path, input) in &self.candidates {
             match input {
                 PlatformXmlOwnerCandidateInput::ExactFile(raw) => {
-                    if !transaction.protects_path(path)? {
-                        transaction.guard_or_verify_exact_preimage(path, raw)?;
-                    }
+                    transaction.guard_or_verify_exact_preimage(path, raw)?;
                 }
                 PlatformXmlOwnerCandidateInput::Absent => {
                     if !transaction.protects_path(path)? {
@@ -85,11 +104,11 @@ impl PlatformXmlOwnerProvenance {
                 }
             }
         }
-        for (directory, expected_names) in &self.directory_memberships {
+        for (directory, expected) in &self.directory_memberships {
             transaction.guard_or_verify_directory_membership(
                 directory,
                 DirectoryMembershipSelector::XmlFiles,
-                expected_names.clone(),
+                expected.clone(),
             )?;
         }
         Ok(())
@@ -127,13 +146,13 @@ impl PlatformXmlOwnerProvenance {
     fn record_directory_membership(
         &mut self,
         directory: PathBuf,
-        expected_names: Vec<OsString>,
+        expected: DirectoryMembershipSnapshot,
     ) -> Result<(), PlatformXmlOwnerError> {
         match self.directory_memberships.get(&directory) {
-            Some(existing) if existing == &expected_names => Ok(()),
+            Some(existing) if existing == &expected => Ok(()),
             Some(_) => Err(changed_during_resolution(&directory)),
             None => {
-                self.directory_memberships.insert(directory, expected_names);
+                self.directory_memberships.insert(directory, expected);
                 Ok(())
             }
         }
@@ -183,6 +202,44 @@ pub(crate) fn root_version_literal(source: &str, root: roxmltree::Node<'_, '_>) 
         .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
         .and_then(|attribute| source.get(attribute.range_value()))
         .map(str::to_owned)
+}
+
+pub(crate) fn prove_already_read_source_set_owner(
+    path: &Path,
+    raw: &[u8],
+    configured_kind: SourceSetKind,
+) -> Result<PlatformXmlSourceSetOwnerEvidence, PlatformXmlOwnerError> {
+    let (source, document) = parse_platform_xml_document(path, raw)?;
+    let root = document.root_element();
+    validate_source_set_owner(root, configured_kind, path)?;
+    let artifact = root
+        .children()
+        .find(|node| node.is_element())
+        .expect("validated source-set owner has one direct artifact");
+    let mut registrations = BTreeSet::new();
+    for child_objects in artifact.children().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "ChildObjects"
+    }) {
+        for registration in child_objects
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+        {
+            if let Some(name) = registration
+                .text()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                registrations
+                    .insert((registration.tag_name().name().to_string(), name.to_string()));
+            }
+        }
+    }
+    Ok(PlatformXmlSourceSetOwnerEvidence {
+        version: root_version_literal(source, root),
+        registrations,
+    })
 }
 
 pub(crate) fn resolve_platform_xml_owners(
@@ -551,24 +608,42 @@ fn read_version_owning_target(
             );
         }
     }
-    let is_supported_version_root =
-        root_qname == (Some(MD_CLASSES_NS), "MetaDataObject") || known_standalone_root(root_qname);
-    if root_version_literal(source, root).is_none()
-        && (!is_supported_version_root || version_is_inherited_when_missing(root_qname))
+    let owner_policy = root_qname
+        .0
+        .and_then(|namespace| platform_xml_owner_policy(namespace, root_qname.1));
+    let raw_version = root_version_literal(source, root);
+    if expected_root.is_some()
+        && raw_version.is_some()
+        && root_qname.0.is_some_and(|namespace| {
+            platform_xml_publication_policy(namespace, root_qname.1)
+                == Some(PlatformXmlPublicationPolicy::Versionless)
+        })
     {
-        return Ok(None);
-    }
-    if !is_supported_version_root {
         return invalid_owner(
+            &path,
+            &format!(
+                "registered versionless platform XML root {{{}}}{} must not carry a version attribute",
+                root_qname.0.unwrap_or(""),
+                root_qname.1
+            ),
+        );
+    }
+    match owner_policy {
+        Some(
+            PlatformXmlOwnerPolicy::MetadataDescriptor
+            | PlatformXmlOwnerPolicy::StandaloneVersionOwner,
+        ) => parse_platform_xml_owner(&path, raw, OwnerExpectation::Standalone).map(Some),
+        Some(PlatformXmlOwnerPolicy::ContainerScoped | PlatformXmlOwnerPolicy::NoOwner) => Ok(None),
+        None if raw_version.is_none() => Ok(None),
+        None => invalid_owner(
             &path,
             &format!(
                 "unsupported version-owning platform XML root {{{}}}{}",
                 root_qname.0.unwrap_or(""),
                 root_qname.1
             ),
-        );
+        ),
     }
-    parse_platform_xml_owner(&path, raw, OwnerExpectation::Standalone).map(Some)
 }
 
 fn snapshot_candidate_file(
@@ -791,15 +866,7 @@ fn parse_platform_xml_owner(
     raw: Vec<u8>,
     expectation: OwnerExpectation,
 ) -> Result<PlatformXmlOwner, PlatformXmlOwnerError> {
-    let text = std::str::from_utf8(&raw).map_err(|error| PlatformXmlOwnerError {
-        path: path.to_path_buf(),
-        message: format!("failed to read {} as UTF-8: {error}", path.display()),
-    })?;
-    let source = text.trim_start_matches('\u{feff}');
-    let document = Document::parse(source).map_err(|error| PlatformXmlOwnerError {
-        path: path.to_path_buf(),
-        message: format!("failed to parse {}: {error}", path.display()),
-    })?;
+    let (source, document) = parse_platform_xml_document(path, &raw)?;
     let root = document.root_element();
     let root_qname = (root.tag_name().namespace(), root.tag_name().name());
     let artifact_children = root
@@ -877,6 +944,22 @@ fn parse_platform_xml_owner(
     })
 }
 
+fn parse_platform_xml_document<'a>(
+    path: &Path,
+    raw: &'a [u8],
+) -> Result<(&'a str, Document<'a>), PlatformXmlOwnerError> {
+    let text = std::str::from_utf8(raw).map_err(|error| PlatformXmlOwnerError {
+        path: path.to_path_buf(),
+        message: format!("failed to read {} as UTF-8: {error}", path.display()),
+    })?;
+    let source = text.trim_start_matches('\u{feff}');
+    let document = Document::parse(source).map_err(|error| PlatformXmlOwnerError {
+        path: path.to_path_buf(),
+        message: format!("failed to parse {}: {error}", path.display()),
+    })?;
+    Ok((source, document))
+}
+
 fn validate_source_set_owner(
     root: roxmltree::Node<'_, '_>,
     configured_kind: SourceSetKind,
@@ -940,38 +1023,18 @@ fn is_supported_metadata_artifact(tag: &str) -> bool {
         )
 }
 
+/// Returns whether the qualified root is supported as a standalone Platform XML
+/// owner.
+///
+/// Derived from the explicit owner axis of the shared QName profile. Publication
+/// syntax is deliberately not enough to make a container-scoped sidecar an
+/// independent format owner.
 fn known_standalone_root(qname: (Option<&str>, &str)) -> bool {
-    matches!(
-        qname,
-        (Some("http://v8.1c.ru/8.3/xcf/logform"), "Form")
-            | (
-                Some("http://v8.1c.ru/8.3/xcf/extrnprops"),
-                "CommandInterface"
-            )
-            | (Some("http://v8.1c.ru/8.3/xcf/extrnprops"), "Help")
-            | (
-                Some("http://v8.1c.ru/8.3/xcf/extrnprops"),
-                "ExchangePlanContent"
-            )
-            | (
-                Some("http://v8.1c.ru/8.3/xcf/extrnprops"),
-                "HomePageWorkArea"
-            )
-            | (Some("http://v8.1c.ru/8.3/xcf/scheme"), "GraphicalSchema")
-            | (Some("http://v8.1c.ru/8.2/roles"), "Rights")
-            | (
-                Some("http://v8.1c.ru/8.2/managed-application/core"),
-                "ClientApplicationInterface"
-            )
-    )
-}
-
-fn version_is_inherited_when_missing(qname: (Option<&str>, &str)) -> bool {
-    qname
-        == (
-            Some("http://v8.1c.ru/8.2/managed-application/core"),
-            "ClientApplicationInterface",
-        )
+    let (Some(namespace), local_name) = qname else {
+        return false;
+    };
+    platform_xml_owner_policy(namespace, local_name)
+        == Some(PlatformXmlOwnerPolicy::StandaloneVersionOwner)
 }
 
 fn invalid_owner<T>(path: &Path, reason: &str) -> Result<T, PlatformXmlOwnerError> {
@@ -1004,6 +1067,28 @@ mod tests {
             workspace_root: root.clone(),
             cache_root: root.join(".build/unica"),
             workspace_epoch: 1,
+        }
+    }
+
+    #[test]
+    fn standalone_ownership_is_independent_from_publication_versioning() {
+        for (namespace, local_name) in [
+            ("http://v8.1c.ru/8.3/xcf/logform", "Form"),
+            ("http://v8.1c.ru/8.2/roles", "Rights"),
+        ] {
+            assert!(known_standalone_root((Some(namespace), local_name)));
+        }
+        for (namespace, local_name) in [
+            ("http://v8.1c.ru/8.3/xcf/predef", "PredefinedData"),
+            ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExtPicture"),
+            ("http://v8.1c.ru/8.3/xcf/extrnprops", "JobSchedule"),
+            ("http://v8.1c.ru/8.3/xcf/dumpinfo", "ConfigDumpInfo"),
+            (
+                "http://v8.1c.ru/8.2/managed-application/core",
+                "ClientApplicationInterface",
+            ),
+        ] {
+            assert!(!known_standalone_root((Some(namespace), local_name)));
         }
     }
 
@@ -1086,6 +1171,48 @@ mod tests {
             .expect("an absent declared output must be accepted");
         assert!(owners.is_empty(), "{owners:?}");
 
+        let invalid = context.cwd.join("VersionedSpreadsheet.xml");
+        fs::write(
+            &invalid,
+            r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#,
+        )
+        .unwrap();
+        let error = resolve_platform_xml_owners_for_exact_root(&invalid, &context, MXL_ROOT)
+            .expect_err("a declared versionless target must reject a version attribute");
+        assert!(error.message.contains("must not carry a version attribute"));
+
+        let owners = resolve_platform_xml_owners(&invalid, &context)
+            .expect("an unrelated dependency does not apply publication syntax");
+        assert!(owners.is_empty(), "{owners:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn exact_root_provenance_must_match_an_existing_replacement_preimage() {
+        let context = temp_context("exact-root-replacement-preimage");
+        let target = context.cwd.join("CompositionSchema");
+        let original = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.21"/>"#;
+        let planned = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"><dataSources/></DataCompositionSchema>"#;
+        let concurrent = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#;
+        fs::write(&target, original).unwrap();
+
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(&target, original, planned.to_vec())
+            .expect("the original bytes must register the replacement preimage");
+        fs::write(&target, concurrent).unwrap();
+
+        let resolution =
+            resolve_platform_xml_owners_for_exact_root_with_provenance(&target, &context, DCS_ROOT)
+                .expect("the concurrent image is a valid exact DCS root");
+        let error = resolution
+            .provenance
+            .bind_to(&mut transaction)
+            .expect_err("semantic authorization must match the replacement preimage");
+
+        assert!(error.contains("changed while planning"), "{error}");
+        assert_eq!(fs::read(&target).unwrap(), concurrent);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -1108,6 +1235,47 @@ mod tests {
         assert_eq!(owners[0].version.as_deref(), Some("2.20"));
         assert_eq!(owners[0].kind, PlatformXmlOwnerKind::Standalone);
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn container_scoped_versioned_roots_never_become_standalone_owners() {
+        let cases = [
+            (
+                "predefined-supported",
+                br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" version="2.20"/>"#
+                    .as_slice(),
+            ),
+            (
+                "predefined-versionless",
+                br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef"/>"#.as_slice(),
+            ),
+            (
+                "predefined-newer",
+                br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" version="2.21"/>"#
+                    .as_slice(),
+            ),
+            (
+                "ext-picture",
+                br#"<ExtPicture xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#
+                    .as_slice(),
+            ),
+            (
+                "job-schedule",
+                br#"<JobSchedule xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#
+                    .as_slice(),
+            ),
+        ];
+
+        for (label, xml) in cases {
+            let context = temp_context(label);
+            let path = context.cwd.join("Sidecar.xml");
+            fs::write(&path, xml).unwrap();
+
+            let owners = resolve_platform_xml_owners(&path, &context).unwrap();
+
+            assert!(owners.is_empty(), "{label}: {owners:?}");
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
     }
 
     #[test]

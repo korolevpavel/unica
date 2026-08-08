@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
@@ -184,8 +185,8 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["subsystem-command-interface"],
     },
     MutatorRegistryEntry {
-        tool: "unica.meta.compile",
-        operation: "meta-compile",
+        tool: "unica.meta.add",
+        operation: "meta-add",
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &[
             "meta-compile-catalog",
@@ -458,117 +459,117 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "meta-compile-catalog",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Catalog",
     },
     ExecutableCase {
         id: "meta-compile-document",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Document",
     },
     ExecutableCase {
         id: "meta-compile-enum",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Enum",
     },
     ExecutableCase {
         id: "meta-compile-constant",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Constant",
     },
     ExecutableCase {
         id: "meta-compile-information-register",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "InformationRegister",
     },
     ExecutableCase {
         id: "meta-compile-accumulation-register",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "AccumulationRegister",
     },
     ExecutableCase {
         id: "meta-compile-accounting-register",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "AccountingRegister",
     },
     ExecutableCase {
         id: "meta-compile-calculation-register",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "CalculationRegister",
     },
     ExecutableCase {
         id: "meta-compile-chart-of-accounts",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ChartOfAccounts",
     },
     ExecutableCase {
         id: "meta-compile-chart-of-characteristic-types",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ChartOfCharacteristicTypes",
     },
     ExecutableCase {
         id: "meta-compile-chart-of-calculation-types",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ChartOfCalculationTypes",
     },
     ExecutableCase {
         id: "meta-compile-business-process",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "BusinessProcess",
     },
     ExecutableCase {
         id: "meta-compile-task",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Task",
     },
     ExecutableCase {
         id: "meta-compile-exchange-plan",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ExchangePlan",
     },
     ExecutableCase {
         id: "meta-compile-document-journal",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "DocumentJournal",
     },
     ExecutableCase {
         id: "meta-compile-report",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Report",
     },
     ExecutableCase {
         id: "meta-compile-data-processor",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "DataProcessor",
     },
     ExecutableCase {
         id: "meta-compile-common-module",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "CommonModule",
     },
     ExecutableCase {
         id: "meta-compile-scheduled-job",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ScheduledJob",
     },
     ExecutableCase {
         id: "meta-compile-event-subscription",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "EventSubscription",
     },
     ExecutableCase {
         id: "meta-compile-http-service",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "HTTPService",
     },
     ExecutableCase {
         id: "meta-compile-web-service",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "WebService",
     },
     ExecutableCase {
         id: "meta-compile-defined-type",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "DefinedType",
     },
     ExecutableCase {
@@ -726,7 +727,29 @@ fn common_args(workspace: &Path) -> Map<String, Value> {
 fn call_public_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
     assert_eq!(args.get("dryRun"), Some(&Value::Bool(false)));
     let app = UnicaApplication::new();
-    let result = app.call_tool(tool, args)?;
+    let result = if matches!(
+        tool,
+        "unica.meta.add" | "unica.meta.edit" | "unica.meta.remove"
+    ) {
+        static PROCESS_CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = PROCESS_CWD_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let workspace = args
+            .get("cwd")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{tool} corpus call has no workspace"))?;
+        let previous = std::env::current_dir().map_err(|error| error.to_string())?;
+        std::env::set_current_dir(workspace).map_err(|error| error.to_string())?;
+        let mut typed_args = args.clone();
+        typed_args.remove("cwd");
+        let result = app.call_tool(tool, &typed_args);
+        std::env::set_current_dir(previous).map_err(|error| error.to_string())?;
+        result?
+    } else {
+        app.call_tool(tool, args)?
+    };
     if !result.ok || !result.errors.is_empty() {
         return Err(format!(
             "{tool} failed: {}; errors={:?}",
@@ -754,9 +777,23 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 fn is_xml_payload_path(path: &Path) -> bool {
-    path.extension()
+    if path
+        .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-        || path.file_name().is_some_and(|name| name == "Package.bin")
+    {
+        return true;
+    }
+    // ADR-0024 grants `Package.bin` its XML reading through the XDTO package
+    // layout, not through the file name. Mirrored by `_is_xml_payload_path` in
+    // scripts/dev/verify-8-3-27-platform.py.
+    let components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let [.., collection, _package, ext, name] = components.as_slice() else {
+        return false;
+    };
+    collection == "XDTOPackages" && ext == "Ext" && name == "Package.bin"
 }
 
 fn visit_xml_files(
@@ -1274,16 +1311,55 @@ fn write_json_input(workspace: &Path, name: &str, value: &Value) -> Result<Strin
     Ok(relative)
 }
 
-fn meta_compile_args(workspace: &Path, json_path: &str) -> Map<String, Value> {
-    let mut args = common_args(workspace);
-    args.insert("JsonPath".to_string(), Value::String(json_path.to_string()));
-    args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-    args
+/// Минимальные `operations`, делающие объект целостным по ADR-0030.
+///
+/// Виды без записи в таблице условий ничего не требуют, и инструмент за них
+/// ничего не придумывает, поэтому здесь для них пусто.
+fn meta_operations(kind: &str) -> Option<Value> {
+    let string50 =
+        json!({"variants": [{"kind": "string", "length": 50, "allowedLength": "variable"}]});
+    let number = |digits: u32, fraction: u32| json!({"variants": [{"kind": "number", "digits": digits, "fraction": fraction, "sign": "any"}]});
+    match kind {
+        "InformationRegister" => Some(json!([
+            {"op": "add", "collection": "dimensions",
+             "elements": [{"name": "Item", "type": string50}]},
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Price", "type": number(15, 2)}]}
+        ])),
+        "AccumulationRegister" => Some(json!([
+            {"op": "add", "collection": "dimensions",
+             "elements": [{"name": "Warehouse", "type": string50}]},
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Quantity", "type": number(15, 3)}]}
+        ])),
+        "AccountingRegister" => Some(json!([
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Amount", "type": number(15, 2)}]}
+        ])),
+        "WebService" => Some(json!([
+            {"op": "setProperties", "values": {"Namespace": "urn:corpus"}}
+        ])),
+        _ => None,
+    }
 }
 
 fn seed_metadata(workspace: &Path, input_name: &str, definition: Value) -> Result<(), String> {
-    let path = write_json_input(workspace, input_name, &definition)?;
-    call_public_tool("unica.meta.compile", &meta_compile_args(workspace, &path))?;
+    let kind = definition
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("metadata seed {input_name} has no type"))?;
+    let name = definition
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("metadata seed {input_name} has no name"))?;
+    let mut args = common_args(workspace);
+    args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+    args.insert("kind".to_string(), Value::String(kind.to_string()));
+    args.insert("name".to_string(), Value::String(name.to_string()));
+    if let Some(operations) = meta_operations(kind) {
+        args.insert("operations".to_string(), operations);
+    }
+    call_public_tool("unica.meta.add", &args)?;
     Ok(())
 }
 
@@ -2087,32 +2163,40 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         }
         let definition = meta_definition(case.branch)
             .ok_or_else(|| format!("missing metadata definition for {}", case.branch))?;
-        let path = write_json_input(workspace, case.id, &definition)?;
-        return Ok(meta_compile_args(workspace, &path));
+        let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        args.insert("kind".to_string(), Value::String(case.branch.to_string()));
+        args.insert(
+            "name".to_string(),
+            Value::String(
+                definition["name"]
+                    .as_str()
+                    .ok_or_else(|| format!("metadata case {} has no name", case.id))?
+                    .to_string(),
+            ),
+        );
+        if let Some(operations) = meta_operations(case.branch) {
+            args.insert("operations".to_string(), operations);
+        }
+        return Ok(args);
     }
 
     if matches!(case.id, "meta-edit-property" | "meta-remove-object") {
         seed_catalog(workspace)?;
         let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".to_string(),
+            Value::String("Catalog.CorpusCatalog".to_string()),
+        );
         if case.id == "meta-edit-property" {
             args.insert(
-                "ObjectPath".to_string(),
-                Value::String("src/Catalogs/CorpusCatalog.xml".to_string()),
-            );
-            args.insert(
-                "Operation".to_string(),
-                Value::String("modify-property".to_string()),
-            );
-            args.insert(
-                "Value".to_string(),
-                Value::String("Comment=Corpus edited".to_string()),
+                "operations".to_string(),
+                json!([{"op": "setProperties", "values": {"Comment": "Corpus edited"}}]),
             );
         } else {
-            args.insert("ConfigDir".to_string(), Value::String("src".to_string()));
-            args.insert(
-                "Object".to_string(),
-                Value::String("Catalog.CorpusCatalog".to_string()),
-            );
+            args.insert("force".to_string(), Value::Bool(true));
+            args.insert("confirm".to_string(), Value::Bool(true));
         }
         return Ok(args);
     }
@@ -2216,7 +2300,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         args.insert("JsonPath".to_string(), Value::String(path));
         args.insert(
             "OutputPath".to_string(),
-            Value::String("src/Reports/CorpusReport/Forms/CorpusForm.xml".to_string()),
+            Value::String("src/Reports/CorpusReport/Forms/CorpusForm/Ext/Form.xml".to_string()),
         );
         return Ok(args);
     }
@@ -2227,7 +2311,9 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         if case.id == "form-edit-managed" {
             args.insert(
                 "FormPath".to_string(),
-                Value::String("src/Catalogs/CorpusCatalog/Forms/CorpusForm.xml".to_string()),
+                Value::String(
+                    "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml".to_string(),
+                ),
             );
             args.insert(
                 "definition".to_string(),
@@ -3410,7 +3496,7 @@ fn configured_output_directory() -> Result<PathBuf, String> {
     configured_output_directory_from(raw.as_deref(), repo_root, &home)
 }
 
-fn live_public_native_mutators() -> BTreeMap<&'static str, &'static str> {
+fn live_public_mutators() -> BTreeMap<&'static str, &'static str> {
     UnicaApplication::new()
         .tools()
         .into_iter()
@@ -3418,8 +3504,15 @@ fn live_public_native_mutators() -> BTreeMap<&'static str, &'static str> {
             if !tool.mutating {
                 return None;
             }
-            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
-                return None;
+            let operation = match tool.handler {
+                ToolHandler::NativeOperation { operation, .. } => operation,
+                ToolHandler::Metadata { .. } => match tool.name {
+                    "unica.meta.add" => "meta-add",
+                    "unica.meta.edit" => "meta-edit",
+                    "unica.meta.remove" => "meta-remove",
+                    _ => return None,
+                },
+                _ => return None,
             };
             Some((tool.name, operation))
         })
@@ -3428,7 +3521,7 @@ fn live_public_native_mutators() -> BTreeMap<&'static str, &'static str> {
 
 #[test]
 fn every_public_native_mutator_has_xml_impact_and_case_coverage() {
-    let live = live_public_native_mutators();
+    let live = live_public_mutators();
     let mut registry = BTreeMap::new();
     let mut seen_operations = BTreeSet::new();
     for entry in MUTATOR_REGISTRY {
@@ -4081,6 +4174,51 @@ fn non_xml_inventory_covers_every_xml_none_impact_case() {
     }
 }
 
+#[test]
+fn managed_form_cases_address_logform_content_and_spare_the_descriptor() {
+    let expectations = [
+        ("form-compile-managed", "src/Reports/CorpusReport"),
+        ("form-edit-managed", "src/Catalogs/CorpusCatalog"),
+    ];
+    for (case_id, owner) in expectations {
+        let root = unique_temp_dir(case_id);
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap();
+        let mut gate = SequentialCallGate::default();
+
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+
+        let prefix = manifest_case_prefix(case_id);
+        let content = format!("{prefix}/{owner}/Forms/CorpusForm/Ext/Form.xml");
+        let descriptor = format!("{prefix}/{owner}/Forms/CorpusForm.xml");
+        let families = generated
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.family.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            families.get(descriptor.as_str()).copied(),
+            Some("metadata"),
+            "{case_id} rewrote the managed form descriptor"
+        );
+        let changed = generated
+            .files
+            .iter()
+            .filter(|file| matches!(file.delta.as_str(), "created" | "modified"))
+            .map(|file| (file.path.as_str(), file.family.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            changed,
+            [(content.as_str(), "managed-form")],
+            "{case_id} did not change exactly the managed form content"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn assert_exact_extended_property_state(path: &Path, expected_property: &str) {
     let xml = fs::read_to_string(path).unwrap();
     let document = Document::parse(xml.trim_start_matches('\u{feff}'))
@@ -4314,7 +4452,12 @@ fn corpus_case_inventories_stable_files_outside_platform_boundaries() {
     assert!(paths
         .iter()
         .any(|path| path.ends_with("/workspace/v8project.yaml")));
-    assert!(paths.iter().any(|path| path.contains("/workspace/inputs/")));
+    assert!(
+        paths
+            .iter()
+            .all(|path| !path.contains("/workspace/inputs/")),
+        "typed meta.add must not recreate the retired JSON-DSL input channel"
+    );
     assert!(paths.iter().all(|path| !path.contains("/workspace/src/")));
 
     fs::remove_dir_all(root).unwrap();
@@ -4739,6 +4882,35 @@ fn cfe_patch_method_corpus_covers_every_supported_module_layout_family() {
             "Constant.ValueManagerModule",
         ]
     );
+}
+
+#[test]
+fn xml_payload_rule_grants_the_bin_exception_only_to_the_xdto_layout() {
+    // ADR-0024 names `XDTOPackages/<Name>/Ext/Package.bin` as text XML. The
+    // exception belongs to that layout, not to the file name, and this rule
+    // mirrors `_is_xml_payload_path` in scripts/dev/verify-8-3-27-platform.py.
+    for granted in [
+        "src/XDTOPackages/CorpusPackage/Ext/Package.bin",
+        "XDTOPackages/CorpusPackage/Ext/Package.bin",
+        "src/Catalogs/CorpusCatalog.xml",
+        "src/Catalogs/CorpusCatalog.XML",
+    ] {
+        assert!(
+            is_xml_payload_path(Path::new(granted)),
+            "expected XML payload: {granted}"
+        );
+    }
+    for refused in [
+        "src/Ext/Package.bin",
+        "src/XDTOPackages/CorpusPackage/Package.bin",
+        "src/XDTOPackages/Ext/Package.bin",
+        "src/Ext/ParentConfigurations.bin",
+    ] {
+        assert!(
+            !is_xml_payload_path(Path::new(refused)),
+            "expected non-XML payload: {refused}"
+        );
+    }
 }
 
 #[test]
