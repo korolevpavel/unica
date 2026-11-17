@@ -26,9 +26,9 @@ PROVIDER_LABELS = {'bsl-analyzer', 'bsl', 'unica', 'v8-runner', 'v8std', 'rlm-to
 TOOL_LABELS = PROVIDER_LABELS | {'unica.check'}
 TARGET_LABELS = {'win-x64', 'linux-x64', 'darwin-arm64'}
 ENGINE_STAGES = {'manifest', 'target', 'delivery', 'checksum', 'start'}
-CHECK_STAGES = {'response', 'daemon', 'delivery-attempt', 'delivery-result', 'engine-installation',
+CHECK_STAGES = {'response', 'daemon', 'delivery-attempt', 'delivery-evidence', 'delivery-result', 'engine-installation',
                 'delivered-path', 'binary-sha', 'terminal-verdict', 'complete'}
-CHECK_FAILURES = {'check_rpc_error', 'check_canonical_result_missing', 'check_pinned_attempt_missing',
+CHECK_FAILURES = {'check_cold_engine_unproven', 'check_engine_version_mismatch', 'check_delivery_target_pin_unproven', 'check_rpc_error', 'check_canonical_result_missing', 'check_pinned_attempt_missing',
                   'check_delivery_class_missing', 'check_delivered_path_missing', 'check_delivered_path_escape',
                   'check_delivered_path_in_core', 'check_packaged_sha_mismatch', 'check_release_sha_mismatch',
                   'check_terminal_bsl_unproven'}
@@ -161,6 +161,17 @@ def main():
         'verifyExitCode': exit_code(summary.get('verifyExitCode')),
         'frontendExitCode': exit_code(summary.get('runExitCode')),
         'sourcesUnchanged': summary.get('sourcesUnchanged') is True,
+        'cacheInitiallyEmpty': summary.get('cacheInitiallyEmpty') is True,
+        'stateInitiallyEmpty': summary.get('stateInitiallyEmpty') is True,
+        'coldEngine': summary.get('engineAbsentBeforeCheck') is True,
+        'engineInstalled': summary.get('engineReadyVerified') is True,
+        'deliveredPathMatchesPins': summary.get('deliveredPathPinned') is True,
+        'deliveryEvidence': closed_label(summary.get('deliveryEvidence'),
+                                         {'fresh-cache-pinned-installation', 'typed-delivery-failure'}),
+        'deliveryArtifactMatches': delivery.get('artifact') == 'bsl-analyzer',
+        'deliveryStatus': closed_label(delivery.get('status'), {'working', 'failed'}),
+        'deliveryTargetMatches': summary.get('deliveryTargetMatches') is True,
+        'deliveryPinMatches': summary.get('deliveryPinMatches') is True,
         'sameDaemon': daemon_ok,
         'analyzerVersionMatches': summary.get('analyzerVersion') == '0.2.86',
         'analyzerSha256': hex_sha(summary.get('analyzerSha256')),
@@ -202,14 +213,29 @@ def main():
         path = logs / name
         if path.is_file():
             proof['privateEvidenceSha256'][name] = sha(path)
+    proof['pinsVerified'] = (proof['engineInstalled'] and proof['deliveredPathMatchesPins']
+                             and proof['manifestMatchesPinnedContent'] and proof['analyzerVersionMatches']
+                             and proof['analyzerSha256'] == '3736453d18dd7ea12634b6a78839eed1fd3a8d821819b752b39f51afd91869d9')
+    proof['typedDeliveryFailureVerified'] = (status == 'REAL_DELIVERY_FAILURE' and proof['driverExitCode'] == 2
+                                            and proof['deliveryArtifactMatches'] and proof['deliveryStatus'] == 'failed'
+                                            and proof['deliveryTargetMatches'] and proof['deliveryPinMatches']
+                                            and proof['coldEngine'] and proof['deliveryFailureClass'] in FAILURES
+                                            and proof['sameDaemon'] and proof['sourcesUnchanged']
+                                            and proof['cacheInitiallyEmpty'] and proof['stateInitiallyEmpty']
+                                            and proof['manifestMatchesPinnedContent'] and proof['builtCandidateHead'] == HEAD
+                                            and proof['prepareExitCode'] == proof['verifyExitCode'] == proof['frontendExitCode'] == 0
+                                            and proof['smokeExitCode'] == 2)
     pass_complete = (status == 'PASS' and all(proof[k] == 0 for k in
                      ['prepareExitCode', 'smokeExitCode', 'driverExitCode', 'verifyExitCode', 'frontendExitCode'])
                      and all(proof[k] for k in ['sourcesUnchanged', 'sameDaemon', 'analyzerVersionMatches',
-                                               'bootstrapVersionMatches', 'checkOk', 'bslValidatorPresent', 'checkTargetMatches', 'terminalBslCheck'])
+                                               'bootstrapVersionMatches', 'checkOk', 'bslValidatorPresent', 'checkTargetMatches', 'terminalBslCheck',
+                                               'cacheInitiallyEmpty', 'stateInitiallyEmpty', 'coldEngine',
+                                               'engineInstalled', 'deliveredPathMatchesPins', 'pinsVerified'])
                      and proof['builtCandidateHead'] == HEAD
                      and proof['analyzerSha256'] == '3736453d18dd7ea12634b6a78839eed1fd3a8d821819b752b39f51afd91869d9'
                      and proof['manifestMatchesPinnedContent']
-                     and proof['checkVerdict'] is not None and proof['checkFinalPresent'])
+                     and proof['checkVerdict'] is not None and proof['checkFinalPresent']
+                     and proof['deliveryEvidence'] == 'fresh-cache-pinned-installation')
     proof['acceptancePassed'] = bool(pass_complete)
     args.out.mkdir(parents=True, exist_ok=False)
     public_json = args.out / 'proof.json'
@@ -228,7 +254,9 @@ def main():
             'verifyEndpointReadMethod', 'verifyEndpointReadWinError', 'verifyEndpointReadErrno',
             'checkStage', 'checkRpcError', 'checkToolError', 'checkCanonicalCode', 'checkCanonicalDetailCode',
             'checkProvider', 'checkTool', 'checkEngineTarget', 'checkEngineStage', 'checkRetryable',
-            'deliveryRecordsPresent', 'deliveryRecordCount', 'deliveryStartedCount', 'deliveryPinnedStartCount'])
+            'deliveryRecordsPresent', 'deliveryRecordCount', 'deliveryStartedCount', 'deliveryPinnedStartCount',
+            'cacheInitiallyEmpty', 'stateInitiallyEmpty', 'coldEngine', 'engineInstalled', 'deliveredPathMatchesPins',
+            'pinsVerified', 'deliveryEvidence', 'typedDeliveryFailureVerified'])
         + '\nPublished original core + candidate bootstrap. Raw MCP, stderr and state are not uploaded.\n',
         encoding='utf-8')
     (args.out / 'checksums.json').write_text(json.dumps({name: sha(args.out / name)

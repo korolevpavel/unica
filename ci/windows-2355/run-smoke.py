@@ -396,6 +396,9 @@ def run(args, report):
     logs, cache, state, workspace = [scratch / n for n in ['logs', 'cache', 'state', 'workspace']]
     for p in [logs, cache, state]:
         p.mkdir()
+    report['cacheInitiallyEmpty'] = not any(cache.iterdir())
+    report['stateInitiallyEmpty'] = not any(state.iterdir())
+    require(report['cacheInitiallyEmpty'] and report['stateInitiallyEmpty'], 'Cache/state must start empty')
     report.update({'candidateHead': HEAD, 'candidateBootstrapSha256': digest(binary),
                    'bootstrapVersion': observed, 'publishedCoreSource': manifest['source'],
                    'manifestSha256': digest(manifest_path), 'manifestContentSha256': manifest_content_sha(manifest),
@@ -453,6 +456,7 @@ def run(args, report):
         require('unica.check' in names, 'Stock runtime does not expose unica.check')
         same_daemon(before, endpoints(state, expected_identity, logs, 'after-initialize', report))
         no_engines(cache, manifest)
+        report['engineAbsentBeforeCheck'] = True
         save(logs / 'cache-before-check.json', inventory(cache))
         report['phase'] = 'check'
         address = 'main:CommonModule.Пример'
@@ -481,24 +485,36 @@ def run(args, report):
         after = endpoints(state, expected_identity, logs, 'after-check', report)
         save(logs / 'daemon-after-check.json', after)
         same_daemon(before, after)
-        report['checkStage'] = 'delivery-attempt'
+        report['checkStage'] = 'delivery-evidence'
         events = attempt_events(cache, 'bsl-analyzer')
         save(logs / 'analyzer-attempt-events.json', events)
-        starts = [e for e in events if e.get('event') == 'started']
         pin = manifest['artifacts']['bsl-analyzer']
         target = pin['targets']['win-x64']
-        require(any(e.get('artifact') == 'bsl-analyzer' and e.get('version') == pin['version'] and
-                    e.get('target') == 'win-x64' and e.get('url') == target['asset']['url'] for e in starts),
-                'No real pinned analyzer delivery attempt: original regression or unsupported path', 'check_pinned_attempt_missing')
+        # The published core compacts closed attempts, including successful installs.
+        # A retained 'started' event is diagnostic only, not a completion receipt.
+        require(report.get('engineAbsentBeforeCheck') is True, 'Cold engine precondition not proven',
+                'check_cold_engine_unproven')
         report['checkStage'] = 'delivery-result'
         if delivery.get('status') == 'failed' and delivery.get('artifact') == 'bsl-analyzer':
-            require(bool(delivery.get('failureClass')), 'Delivery failure has no real classification', 'check_delivery_class_missing')
+            require(delivery.get('failureClass') in {'network', 'untrusted-certificate', 'timeout', 'disk',
+                                                    'checksum', 'configuration', 'internal'},
+                    'Delivery failure has no real classification', 'check_delivery_class_missing')
+            failure_data = value.get('data') or {}
+            require(failure_data.get('tool') == 'bsl-analyzer' and failure_data.get('target') == 'win-x64'
+                    and failure_data.get('pinnedVersion') == pin['version'],
+                    'Typed failure does not prove exact analyzer target/pin', 'check_delivery_target_pin_unproven')
+            report['deliveryTargetMatches'] = True
+            report['deliveryPinMatches'] = True
             report.update(status='REAL_DELIVERY_FAILURE', exitCode=2, delivery=delivery,
+                          deliveryEvidence='typed-delivery-failure',
                           note='Real delivery path reached; successful analyzer execution is NOT proven')
             return
         report['checkStage'] = 'engine-installation'
         engine_root = installed(cache, manifest, 'bsl-analyzer')
+        report['engineReadyVerified'] = True
         tool = next(t for t in core_tools['tools'] if t['name'] == 'bsl-analyzer')
+        require(tool.get('version') == pin['version'], 'Core tool version differs from release pin',
+                'check_engine_version_mismatch')
         entry = tool.get('binaries', {}).get('win-x64', tool)
         report['checkStage'] = 'delivered-path'
         relative = entry.get('deliveredPath')
@@ -511,6 +527,9 @@ def run(args, report):
         require(actual_sha == entry['sha256'], 'deliveredPath SHA differs from packaged tool pin', 'check_packaged_sha_mismatch')
         require(any(f['path'] == relative and f['sha256'] == actual_sha for f in target['files']),
                 'deliveredPath SHA differs from release manifest', 'check_release_sha_mismatch')
+        report.update(analyzerSha256=actual_sha, analyzerVersion=pin['version'])
+        report['deliveredPathPinned'] = True
+        report['deliveryEvidence'] = 'fresh-cache-pinned-installation'
         report['checkStage'] = 'terminal-verdict'
         data = value.get('data') or {}
         # Published core records 'bsl' only after a completed full-verdict provider run.
