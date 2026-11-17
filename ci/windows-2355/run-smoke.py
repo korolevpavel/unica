@@ -403,7 +403,7 @@ def run(args, report):
                    'enginePin': manifest['artifacts']['bsl-analyzer'], 'phase': 'verify'})
     save(logs / 'build-provenance.json', provenance)
     shutil.copy2(manifest_path, logs / 'runtime-manifest.json')
-    fixture = repo / 'tests/fixtures/acceptance/workspace'
+    fixture = repo / 'tests/fixtures/acceptance/workspace-diagnostics'
     original = sources(fixture)
     shutil.copytree(fixture, workspace, ignore=shutil.ignore_patterns('.git', '.build', '.session-temp', '__pycache__'))
     baseline = sources(workspace)
@@ -455,9 +455,9 @@ def run(args, report):
         no_engines(cache, manifest)
         save(logs / 'cache-before-check.json', inventory(cache))
         report['phase'] = 'check'
-        address = 'main:CommonModule.GoogleПереводчик.Module'
+        address = 'main:CommonModule.Пример'
         # Fixed saved fixture; no synthetic providers, no injected network/sha failures.
-        require((workspace / 'src/CommonModules/GoogleПереводчик/Ext/Module.bsl').is_file(), 'Fixture module missing')
+        require((workspace / 'src/CommonModules/Пример/Ext/Module.bsl').is_file(), 'Fixture module missing')
         deadline = time.monotonic() + args.delivery_timeout
         response = client.call('unica.check', {'at': address})
         while True:
