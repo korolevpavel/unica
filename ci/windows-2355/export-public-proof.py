@@ -14,7 +14,7 @@ ADDRESS = 'main:CommonModule.GoogleПереводчик.Module'
 STATUSES = {'BLOCKED_DAEMON_OBSERVATION', 'NOT_EXECUTED', 'PASS', 'REAL_DELIVERY_FAILURE', 'BLOCKED_CORE_OR_PACKAGE',
             'FAIL_OR_INCOMPLETE', 'FAIL_SOURCE_MUTATION', 'FAIL_FRONTEND_EXIT'}
 OBSERVATION_CODES = {'ok', 'endpoint_scan_failed', 'endpoint_missing', 'endpoint_ambiguous',
-                     'endpoint_namespace_mismatch', 'endpoint_record_read_failed', 'endpoint_record_invalid',
+                     'endpoint_namespace_mismatch', 'endpoint_record_read_failed', 'endpoint_record_invalid', 'endpoint_record_not_regular',
                      'process_open_unavailable', 'process_times_unavailable', 'process_exit_unavailable',
                      'process_identity_unavailable', 'daemon_not_alive', 'daemon_replaced'}
 FAILURES = {'network', 'untrusted-certificate', 'timeout', 'disk', 'checksum', 'configuration', 'internal'}
@@ -113,6 +113,10 @@ def main():
         'verifyOtherEndpointCount': exit_code(observed_daemon.get('otherEndpointCount')),
         'verifyInvalidRecordCount': exit_code(observed_daemon.get('invalidRecordCount')),
         'verifyUnreadableRecordCount': exit_code(observed_daemon.get('unreadableRecordCount')),
+        'verifyEndpointReadMethod': 'win32-shared-read'
+            if observed_daemon.get('endpointReadMethod') == 'win32-shared-read' else None,
+        'verifyEndpointReadWinError': exit_code(observed_daemon.get('recordReadWinError')),
+        'verifyEndpointReadErrno': exit_code(observed_daemon.get('recordReadErrno')),
         'verifyExpectedNamespacePresent': observed_daemon.get('expectedNamespacePresent') is True,
         'verifyProcessObservationCode': observed_daemon.get('processObservationCode')
             if observed_daemon.get('processObservationCode') in OBSERVATION_CODES else None,
@@ -171,7 +175,8 @@ def main():
             'sameDaemon', 'checkVerdict', 'terminalBslCheck', 'checkTargetMatches', 'deliveryFailureClass', 'analyzerSha256',
             'failurePhase', 'failureCode', 'exceptionClass', 'verifyEndpointCount', 'verifyExpectedEndpointCount',
             'verifyOtherEndpointCount', 'verifyInvalidRecordCount', 'verifyUnreadableRecordCount',
-            'verifyExpectedNamespacePresent', 'verifyProcessObservationCode', 'verifyProcessWinError'])
+            'verifyExpectedNamespacePresent', 'verifyProcessObservationCode', 'verifyProcessWinError',
+            'verifyEndpointReadMethod', 'verifyEndpointReadWinError', 'verifyEndpointReadErrno'])
         + '\nPublished original core + candidate bootstrap. Raw MCP, stderr and state are not uploaded.\n',
         encoding='utf-8')
     (args.out / 'checksums.json').write_text(json.dumps({name: sha(args.out / name)

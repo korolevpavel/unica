@@ -90,6 +90,47 @@ def process_identity(pid):
         kernel.CloseHandle(handle)
 
 
+def read_endpoint_bytes(path, limit):
+    """Read without conflicting with the daemon's retained DELETE-access handle."""
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                               ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+    kernel.ReadFile.restype = wintypes.BOOL
+    class FileInformation(ctypes.Structure):
+        _fields_ = [('attributes', wintypes.DWORD), ('creation', wintypes.FILETIME),
+                    ('access', wintypes.FILETIME), ('write', wintypes.FILETIME),
+                    ('volume', wintypes.DWORD), ('sizeHigh', wintypes.DWORD), ('sizeLow', wintypes.DWORD),
+                    ('links', wintypes.DWORD), ('indexHigh', wintypes.DWORD), ('indexLow', wintypes.DWORD)]
+    kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileInformation)]
+    kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel.GetFileType.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    # GENERIC_READ only; SHARE_READ | SHARE_WRITE | SHARE_DELETE. OPEN_EXISTING:
+    # no creation, writes, deletion, ACL changes or inheritable handles.
+    # OPEN_REPARSE_POINT prevents reading a symlink target as an endpoint.
+    handle = kernel.CreateFileW(str(path), 0x80000000, 0x1 | 0x2 | 0x4,
+                                None, 3, 0x00200000 | 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        information = FileInformation()
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(information)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        require(kernel.GetFileType(handle) == 1 and not (information.attributes & (0x10 | 0x400)),
+                'Endpoint handle is not a regular non-reparse disk file', 'endpoint_record_not_regular')
+        buffer = ctypes.create_string_buffer(limit)
+        received = wintypes.DWORD()
+        if not kernel.ReadFile(handle, buffer, limit, ctypes.byref(received), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return buffer.raw[:received.value]
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def published_core_identity(manifest):
     # Frozen identity.rs algorithm of published core ddf0aa7..., not the candidate's API.
     abi = hashlib.sha256(b'unica-v0.13-core-abi-1\0unica-daemon-jsonl-5').hexdigest()
@@ -102,7 +143,8 @@ def observe_daemons(state, expected_identity):
     result = {'summary': {'endpointCount': 0, 'expectedEndpointCount': 0, 'otherEndpointCount': 0,
                            'invalidRecordCount': 0, 'unreadableRecordCount': 0,
                            'expectedNamespacePresent': False, 'processObservationCode': None,
-                           'processWinError': None, 'scanCode': 'ok'}, 'records': []}
+                           'processWinError': None, 'recordReadWinError': None, 'recordReadErrno': None,
+                           'endpointReadMethod': 'win32-shared-read', 'scanCode': 'ok'}, 'records': []}
     summary = result['summary']
     try:
         summary['expectedNamespacePresent'] = (state / expected_directory).is_dir()
@@ -117,11 +159,19 @@ def observe_daemons(state, expected_identity):
         item = {'path': path.relative_to(state).as_posix(), 'expectedNamespace': expected_location}
         result['records'].append(item)
         try:
-            with path.open('rb') as stream:
-                raw = stream.read(16 * 1024 + 1)
-        except OSError:
+            raw = read_endpoint_bytes(path, 16 * 1024 + 1)
+        except SmokeFailure as error:
+            item['observationCode'] = error.code
+            summary['invalidRecordCount'] += 1
+            continue
+        except OSError as error:
             item['observationCode'] = 'endpoint_record_read_failed'
+            item['readWinError'] = getattr(error, 'winerror', None)
+            item['readErrno'] = error.errno
             summary['unreadableRecordCount'] += 1
+            if expected_location:
+                summary['recordReadWinError'] = item['readWinError']
+                summary['recordReadErrno'] = item['readErrno']
             continue
         try:
             require(len(raw) <= 16 * 1024, 'Endpoint size exceeds published schema')
