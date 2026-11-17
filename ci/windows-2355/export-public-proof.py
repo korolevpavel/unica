@@ -8,9 +8,15 @@ import re
 
 HEAD = '9ccfa8f6f92248366df079733718db8f870ea754'
 VERSION = '0.15.0-rc.1'
+APPROVED_MANIFEST_CONTENT_SHA = '819b9f6ec1b113aadd4b60f96cdb8ea629300ccb2215a60c10220d71c65bcfac'
+OFFICIAL_MANIFEST_GIT_BLOB = '5ef90bc66a47521a152c889feb3f037bc40b3450'
 ADDRESS = 'main:CommonModule.GoogleПереводчик.Module'
-STATUSES = {'NOT_EXECUTED', 'PASS', 'REAL_DELIVERY_FAILURE', 'BLOCKED_CORE_OR_PACKAGE',
+STATUSES = {'BLOCKED_DAEMON_OBSERVATION', 'NOT_EXECUTED', 'PASS', 'REAL_DELIVERY_FAILURE', 'BLOCKED_CORE_OR_PACKAGE',
             'FAIL_OR_INCOMPLETE', 'FAIL_SOURCE_MUTATION', 'FAIL_FRONTEND_EXIT'}
+OBSERVATION_CODES = {'ok', 'endpoint_scan_failed', 'endpoint_missing', 'endpoint_ambiguous',
+                     'endpoint_namespace_mismatch', 'endpoint_record_read_failed', 'endpoint_record_invalid',
+                     'process_open_unavailable', 'process_times_unavailable', 'process_exit_unavailable',
+                     'process_identity_unavailable', 'daemon_not_alive', 'daemon_replaced'}
 FAILURES = {'network', 'untrusted-certificate', 'timeout', 'disk', 'checksum', 'configuration', 'internal'}
 
 
@@ -25,6 +31,11 @@ def sha(path):
 
 def hex_sha(value, size=64):
     return value if isinstance(value, str) and re.fullmatch('[0-9a-f]{' + str(size) + '}', value) else None
+
+
+def manifest_content_sha(value):
+    encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False)
+    return hashlib.sha256(encoded.encode('ascii')).hexdigest()
 
 
 def exit_code(value):
@@ -44,6 +55,12 @@ def main():
     logs = private / 'smoke/logs'
     build = load(private / 'candidate-root/candidate-build.json')
     phase = load(private / 'phase-status.json')
+    expected_manifest = load(Path(__file__).resolve().parent / 'published-package-metadata/plugins/unica/runtime-manifest.json')
+    observed_manifest = load(logs / 'runtime-manifest.json')
+    manifest_matches = (bool(expected_manifest) and bool(observed_manifest)
+                        and manifest_content_sha(expected_manifest) == APPROVED_MANIFEST_CONTENT_SHA
+                        and manifest_content_sha(observed_manifest) == APPROVED_MANIFEST_CONTENT_SHA
+                        and summary.get('manifestSha256') == sha(logs / 'runtime-manifest.json'))
     # Reject arbitrary strings. Only closed enums, numbers, booleans and hashes leave this process.
     status = summary.get('status')
     status = status if status in STATUSES else 'NOT_EXECUTED'
@@ -64,6 +81,7 @@ def main():
                     break
     data = canonical.get('data') or {}
     delivery = summary.get('delivery') or {}
+    observed_daemon = summary.get('verifyDaemonObservation') or {}
     # Never expose raw error, summary text, path, endpoint, wire, tool arguments or diagnostic messages.
     proof = {
         'schemaVersion': 1, 'repository': 'korolevpavel/unica', 'pr': 2355, 'issue': 2341,
@@ -77,6 +95,28 @@ def main():
         'publishedCoreSource': 'ddf0aa7c7da9062c2b8a8d1b3f509bf5369faf63',
         'marketplaceCommit': hex_sha(summary.get('marketplaceCommit'), 40),
         'manifestSha256': hex_sha(summary.get('manifestSha256')),
+        'manifestContentSha256': manifest_content_sha(observed_manifest) if observed_manifest else None,
+        'expectedManifestContentSha256': APPROVED_MANIFEST_CONTENT_SHA,
+        'officialManifestGitBlob': OFFICIAL_MANIFEST_GIT_BLOB,
+        'manifestMatchesPinnedContent': manifest_matches,
+        'failurePhase': summary.get('phase') if summary.get('phase') in {'verify', 'verify-daemon', 'run', 'check'} else None,
+        'failureCode': summary.get('failureCode') if summary.get('failureCode') in {
+            'assertion_failed', 'driver_exception', 'verify_daemon_not_single_live',
+            'process_times_unavailable', 'process_exit_unavailable'} | OBSERVATION_CODES else None,
+        'exceptionClass': summary.get('exceptionClass') if summary.get('exceptionClass') in {
+            'SmokeFailure', 'RuntimeError', 'OSError', 'TimeoutError', 'Empty', 'JSONDecodeError', 'UnicodeDecodeError'} else None,
+        'verifyDaemonCount': exit_code(summary.get('verifyDaemonCount')),
+        'verifyDaemonAlive': summary.get('verifyDaemonAlive') is True,
+        'verifyDaemonWinError': exit_code(summary.get('verifyDaemonWinError')),
+        'verifyEndpointCount': exit_code(observed_daemon.get('endpointCount')),
+        'verifyExpectedEndpointCount': exit_code(observed_daemon.get('expectedEndpointCount')),
+        'verifyOtherEndpointCount': exit_code(observed_daemon.get('otherEndpointCount')),
+        'verifyInvalidRecordCount': exit_code(observed_daemon.get('invalidRecordCount')),
+        'verifyUnreadableRecordCount': exit_code(observed_daemon.get('unreadableRecordCount')),
+        'verifyExpectedNamespacePresent': observed_daemon.get('expectedNamespacePresent') is True,
+        'verifyProcessObservationCode': observed_daemon.get('processObservationCode')
+            if observed_daemon.get('processObservationCode') in OBSERVATION_CODES else None,
+        'verifyProcessWinError': exit_code(observed_daemon.get('processWinError')),
         'status': status,
         'prepareExitCode': exit_code(phase.get('prepareExitCode')),
         'smokeExitCode': exit_code(phase.get('smokeExitCode')),
@@ -102,6 +142,8 @@ def main():
     # Hash only explicitly named evidence. No filename/path from runtime input is used in exported keys.
     for name in ['build-provenance.json', 'runtime-manifest.json', 'core-tools-manifest.json',
                  'daemon-after-verify.json', 'daemon-after-check.json', 'analyzer-attempt-events.json',
+                 'daemon-observation-after-verify.json', 'daemon-observation-after-initialize.json',
+                 'daemon-observation-after-check.json',
                  'check-final.json', 'sources-before.json', 'sources-after-verify.json', 'sources-after.json',
                  'cache-before.json', 'cache-after-verify.json', 'cache-before-check.json', 'cache-after.json']:
         path = logs / name
@@ -113,7 +155,7 @@ def main():
                                                'bootstrapVersionMatches', 'checkOk', 'bslValidatorPresent', 'checkTargetMatches', 'terminalBslCheck'])
                      and proof['builtCandidateHead'] == HEAD
                      and proof['analyzerSha256'] == '3736453d18dd7ea12634b6a78839eed1fd3a8d821819b752b39f51afd91869d9'
-                     and proof['manifestSha256'] == '1d8d93ac358f60e098b31bc94f542e3857502e569df9f9342c750f89695f2034'
+                     and proof['manifestMatchesPinnedContent']
                      and proof['checkVerdict'] is not None)
     proof['acceptancePassed'] = bool(pass_complete)
     args.out.mkdir(parents=True, exist_ok=False)
@@ -126,7 +168,10 @@ def main():
         + ''.join('| ' + key + ' | ' + str(proof[key]) + ' |\n' for key in [
             'workflowCommit', 'expectedCandidateHead', 'builtCandidateHead', 'status', 'prepareExitCode',
             'smokeExitCode', 'driverExitCode', 'verifyExitCode', 'frontendExitCode', 'sourcesUnchanged',
-            'sameDaemon', 'checkVerdict', 'terminalBslCheck', 'checkTargetMatches', 'deliveryFailureClass', 'analyzerSha256'])
+            'sameDaemon', 'checkVerdict', 'terminalBslCheck', 'checkTargetMatches', 'deliveryFailureClass', 'analyzerSha256',
+            'failurePhase', 'failureCode', 'exceptionClass', 'verifyEndpointCount', 'verifyExpectedEndpointCount',
+            'verifyOtherEndpointCount', 'verifyInvalidRecordCount', 'verifyUnreadableRecordCount',
+            'verifyExpectedNamespacePresent', 'verifyProcessObservationCode', 'verifyProcessWinError'])
         + '\nPublished original core + candidate bootstrap. Raw MCP, stderr and state are not uploaded.\n',
         encoding='utf-8')
     (args.out / 'checksums.json').write_text(json.dumps({name: sha(args.out / name)
