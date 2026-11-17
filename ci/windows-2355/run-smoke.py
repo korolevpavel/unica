@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""Manual Windows acceptance driver; preparation alone is not an executed result."""
+import argparse
+import ctypes
+from ctypes import wintypes
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import queue
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+HEAD = '9ccfa8f6f92248366df079733718db8f870ea754'
+VERSION = '0.15.0-rc.1'
+HERE = Path(__file__).resolve().parent
+
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def save(path, value):
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def git(repo, *args):
+    return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
+
+
+def inventory(root):
+    return {p.relative_to(root).as_posix(): digest(p) for p in sorted(root.rglob('*')) if p.is_file()}
+
+
+def sources(workspace):
+    return {'src/' + p: h for p, h in inventory(workspace / 'src').items()} | {
+        'v8project.yaml': digest(workspace / 'v8project.yaml')}
+
+
+def process_identity(pid):
+    """GetProcessTimes disambiguates PID reuse; never reads process environment."""
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return {'pid': pid, 'alive': False, 'winError': ctypes.get_last_error()}
+    try:
+        created, exited, system, user = (wintypes.FILETIME() for _ in range(4))
+        require(kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                       ctypes.byref(system), ctypes.byref(user)), 'GetProcessTimes failed')
+        code = wintypes.DWORD()
+        require(kernel.GetExitCodeProcess(handle, ctypes.byref(code)), 'GetExitCodeProcess failed')
+        return {'pid': pid, 'alive': code.value == 259,
+                'createdFiletime': (created.dwHighDateTime << 32) | created.dwLowDateTime}
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def endpoints(state):
+    records = []
+    for path in state.rglob('endpoint.json'):
+        value = json.loads(path.read_text(encoding='utf-8'))
+        # Keep credentials out of shareable evidence. Private state stays in scratch.
+        records.append({'path': path.relative_to(state).as_posix(),
+                        'recordSha256': digest(path), 'pid': value['pid'],
+                        'coreIdentity': value.get('coreIdentity'),
+                        'instanceSha256': hashlib.sha256(value.get('instanceId', '').encode()).hexdigest(),
+                        'process': process_identity(value['pid'])})
+    return records
+
+
+def same_daemon(before, after):
+    require(len(before) == len(after) == 1, 'Expected one daemon endpoint in isolated state')
+    require(before == after and before[0]['process']['alive'], 'Daemon changed/exited after verify')
+
+
+def attempt_events(cache, artifact):
+    events = []
+    for path in (cache / '.attempts' / artifact).glob('*.jsonl'):
+        for line in path.read_text(encoding='utf-8').splitlines():
+            if line.strip():
+                events.append(json.loads(line))
+    return events
+
+
+def installed(cache, manifest, name):
+    artifact = manifest['artifacts'][name]
+    target = artifact['targets']['win-x64']
+    root = cache / name / (artifact['version'] + '--' + target['asset']['sha256']) / 'win-x64'
+    ready = json.loads((root / '.ready.json').read_text(encoding='utf-8'))
+    require(ready == {'artifact': name, 'version': artifact['version'], 'target': 'win-x64',
+                      'assetSha256': target['asset']['sha256']}, 'Invalid ready marker: ' + name)
+    for item in target['files']:
+        path = (root / item['path']).resolve()
+        require(path.is_relative_to(root.resolve()), 'Manifest path escapes installation')
+        require(digest(path) == item['sha256'], 'Delivered file SHA mismatch: ' + str(path))
+    return root
+
+
+def no_engines(cache, manifest):
+    for name, artifact in manifest['artifacts'].items():
+        if artifact['role'] == 'engine':
+            require(not (cache / name).exists(), 'Engine installed before diagnostic request: ' + name)
+            require(not attempt_events(cache, name), 'Engine delivery attempted before diagnostic request: ' + name)
+
+
+class MCP:
+    def __init__(self, command, cwd, env, logs):
+        self.logs = logs
+        self.stderr = (logs / 'run-stderr.log').open('wb')
+        self.wire = (logs / 'mcp.jsonl').open('w', encoding='utf-8')
+        self.child = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, stderr=self.stderr)
+        self.messages = queue.Queue()
+        self.counter = 0
+        self.workspace = cwd
+        self.thread = threading.Thread(target=self.read, daemon=True)
+        self.thread.start()
+
+    def read(self):
+        for line in self.child.stdout:
+            self.messages.put(line)
+        self.messages.put(None)
+
+    def send(self, value):
+        self.wire.write(json.dumps({'direction': 'send', 'value': value}, ensure_ascii=False) + '\n')
+        self.wire.flush()
+        self.child.stdin.write((json.dumps(value, ensure_ascii=False) + '\n').encode('utf-8'))
+        self.child.stdin.flush()
+
+    def request(self, method, params=None, timeout=120):
+        self.counter += 1
+        expected = self.counter
+        payload = {'jsonrpc': '2.0', 'id': expected, 'method': method}
+        if params is not None:
+            payload['params'] = params
+        self.send(payload)
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('MCP deadline: ' + method)
+            line = self.messages.get(timeout=remaining)
+            if line is None:
+                raise RuntimeError('MCP EOF during ' + method)
+            message = json.loads(line)
+            self.wire.write(json.dumps({'direction': 'receive', 'value': message}, ensure_ascii=False) + '\n')
+            self.wire.flush()
+            if 'method' in message and 'id' in message:
+                if message['method'] == 'roots/list':
+                    self.send({'jsonrpc': '2.0', 'id': message['id'], 'result': {
+                        'roots': [{'uri': self.workspace.as_uri(), 'name': 'windows-smoke'}]}})
+                elif message['method'] == 'ping':
+                    self.send({'jsonrpc': '2.0', 'id': message['id'], 'result': {}})
+                else:
+                    self.send({'jsonrpc': '2.0', 'id': message['id'], 'error': {
+                        'code': -32601, 'message': 'Unsupported client method'}})
+                continue
+            if message.get('id') == expected:
+                return message
+
+    def call(self, name, arguments):
+        return self.request('tools/call', {'name': name, 'arguments': arguments})
+
+    def close(self):
+        self.child.stdin.close()
+        try:
+            self.child.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            self.child.kill()
+            self.child.wait(timeout=10)
+        self.wire.close()
+        self.stderr.close()
+        return self.child.returncode
+
+
+def structured(response):
+    require('error' not in response, 'MCP RPC error; inspect mcp.jsonl')
+    result = response.get('result', {})
+    value = result.get('structuredContent')
+    # Some compatible tool responses carry the same structured JSON as text.
+    if value is None:
+        for block in result.get('content', []):
+            if block.get('type') == 'text':
+                try:
+                    value = json.loads(block['text'])
+                except (ValueError, KeyError):
+                    continue
+                break
+    require(isinstance(value, dict), 'No canonical check result; inspect mcp.jsonl')
+    return value
+
+
+def run(args, report):
+    require(os.name == 'nt' and platform.machine().lower() in {'amd64', 'x86_64'}, 'Windows x64 required')
+    require(sys.version_info >= (3, 12), 'Python 3.12+ required')
+    repo, package, binary = args.candidate_repo.resolve(), args.plugin_root.resolve(), args.bootstrap.resolve()
+    require(git(repo, 'rev-parse', 'HEAD') == HEAD, 'Candidate checkout HEAD changed; re-plan compatibility')
+    require(not git(repo, 'status', '--porcelain', '--untracked-files=no'), 'Candidate checkout has tracked changes')
+    provenance = json.loads(args.build_provenance.read_text(encoding='utf-8-sig'))
+    require(provenance['head'] == HEAD and provenance['sha256'].lower() == digest(binary),
+            'Candidate binary does not match saved build provenance')
+    observed = subprocess.check_output([str(binary), '--version'], text=True).strip()
+    require(observed == 'unica-bootstrap ' + VERSION, 'Candidate bootstrap version mismatch')
+    manifest_path = package / 'runtime-manifest.json'
+    expected_path = HERE / 'published-package-metadata/plugins/unica/runtime-manifest.json'
+    require(digest(manifest_path) == digest(expected_path), 'Package manifest differs from saved published tag')
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    require(manifest['pluginVersion'] == VERSION and not manifest['development'], 'Release manifest required')
+    for host in ['.codex-plugin', '.claude-plugin', '.zcode-plugin']:
+        value = json.loads((package / host / 'plugin.json').read_text(encoding='utf-8'))
+        require(value['version'] == VERSION, 'Plugin metadata version mismatch: ' + host)
+    require(not (package / 'bin').exists(), 'Use the stock thin package, without bundled core/engines')
+    package_commit = git(package, 'rev-parse', 'HEAD')
+    require(package_commit == git(package, 'rev-parse', 'v0.15.0-rc.1^{commit}'), 'Package checkout is not the release tag')
+    require(not git(package, 'status', '--porcelain', '--untracked-files=no'), 'Stock package has tracked changes')
+    # mkdir must fail on any previous scratch: empty cache/state is a hard prerequisite.
+    scratch = args.scratch.resolve()
+    scratch.mkdir(parents=True, exist_ok=False)
+    logs, cache, state, workspace = [scratch / n for n in ['logs', 'cache', 'state', 'workspace']]
+    for p in [logs, cache, state]:
+        p.mkdir()
+    report.update({'candidateHead': HEAD, 'candidateBootstrapSha256': digest(binary),
+                   'bootstrapVersion': observed, 'publishedCoreSource': manifest['source'],
+                   'manifestSha256': digest(manifest_path), 'marketplaceCommit': package_commit, 'scratch': str(scratch),
+                   'enginePin': manifest['artifacts']['bsl-analyzer'], 'phase': 'verify'})
+    save(logs / 'build-provenance.json', provenance)
+    shutil.copy2(manifest_path, logs / 'runtime-manifest.json')
+    fixture = repo / 'tests/fixtures/acceptance/workspace'
+    original = sources(fixture)
+    shutil.copytree(fixture, workspace, ignore=shutil.ignore_patterns('.git', '.build', '.session-temp', '__pycache__'))
+    baseline = sources(workspace)
+    require(original == baseline, 'Fixture copy differs from saved checkout source')
+    save(logs / 'sources-before.json', baseline)
+    save(logs / 'cache-before.json', inventory(cache))
+    save(logs / 'state-before.json', inventory(state))
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith('UNICA_')}
+    # Do NOT set ARTIFACT_CACHE or RUNTIME_MANIFEST: propagation is precisely the PR under test.
+    env.update({'UNICA_RUNTIME_CACHE_DIR': str(cache), 'UNICA_PROVIDER_STATE_DIR': str(state),
+                'UNICA_DAEMON_IDLE_GRACE_MS': '60000', 'PYTHONUTF8': '1'})
+    client = None
+    try:
+        with (logs / 'verify-stdout.log').open('wb') as out, (logs / 'verify-stderr.log').open('wb') as err:
+            completed = subprocess.run([str(binary), 'verify', '--plugin-root', str(package)],
+                                       cwd=workspace, env=env, stdout=out, stderr=err, timeout=600)
+        report['verifyExitCode'] = completed.returncode
+        require(completed.returncode == 0, 'Bootstrap verify failed; inspect verify-stderr.log')
+        require(sources(workspace) == baseline, 'verify changed source')
+        save(logs / 'sources-after-verify.json', sources(workspace))
+        no_engines(cache, manifest)
+        core_root = installed(cache, manifest, 'unica')
+        core_tools = json.loads((core_root / 'third-party/manifest.json').read_text(encoding='utf-8'))
+        for tool in core_tools['tools']:
+            entry = tool.get('binaries', {}).get('win-x64', tool)
+            if tool['name'] != 'unica' and entry.get('binaryPath'):
+                require(not (core_root / entry['binaryPath']).exists(), 'External engine bundled into core')
+        save(logs / 'core-tools-manifest.json', core_tools)
+        before = endpoints(state)
+        require(len(before) == 1 and before[0]['process']['alive'], 'verify did not leave exactly one live daemon')
+        save(logs / 'daemon-after-verify.json', before)
+        save(logs / 'cache-after-verify.json', inventory(cache))
+        report['phase'] = 'run'
+        client = MCP([str(binary), 'run', '--plugin-root', str(package)], workspace, env, logs)
+        hello = client.request('initialize', {'protocolVersion': '2025-06-18',
+                               'capabilities': {'roots': {'listChanged': False}},
+                               'clientInfo': {'name': 'windows-2341-smoke', 'version': '1'}})
+        require('result' in hello, 'initialize failed')
+        client.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        catalog = client.request('tools/list')
+        names = {t['name'] for t in catalog.get('result', {}).get('tools', [])}
+        require('unica.check' in names, 'Stock runtime does not expose unica.check')
+        same_daemon(before, endpoints(state))
+        no_engines(cache, manifest)
+        save(logs / 'cache-before-check.json', inventory(cache))
+        report['phase'] = 'check'
+        address = 'main:CommonModule.GoogleПереводчик.Module'
+        # Fixed saved fixture; no synthetic providers, no injected network/sha failures.
+        require((workspace / 'src/CommonModules/GoogleПереводчик/Ext/Module.bsl').is_file(), 'Fixture module missing')
+        deadline = time.monotonic() + args.delivery_timeout
+        response = client.call('unica.check', {'at': address})
+        while True:
+            value = structured(response)
+            task = (value.get('data') or {}).get('task') or {}
+            delivery = (value.get('data') or {}).get('delivery') or {}
+            if task.get('status') in {'queued', 'working'}:
+                require('unica.task.result' in names, 'No task result tool in compatible catalog')
+                require(time.monotonic() < deadline, 'Task deadline expired; result remains incomplete')
+                response = client.call('unica.task.result', {'taskId': task['taskId'], 'waitMs': 7000})
+            elif delivery.get('artifact') == 'bsl-analyzer' and delivery.get('status') == 'working':
+                require(time.monotonic() < deadline, 'Delivery deadline expired; result remains incomplete')
+                time.sleep(min(max(delivery.get('retryAfterMs', 1000) / 1000, 0.1), 5))
+                response = client.call('unica.check', {'at': address})
+            else:
+                break
+        save(logs / 'check-final.json', response)
+        after = endpoints(state)
+        save(logs / 'daemon-after-check.json', after)
+        same_daemon(before, after)
+        events = attempt_events(cache, 'bsl-analyzer')
+        save(logs / 'analyzer-attempt-events.json', events)
+        starts = [e for e in events if e.get('event') == 'started']
+        pin = manifest['artifacts']['bsl-analyzer']
+        target = pin['targets']['win-x64']
+        require(any(e.get('artifact') == 'bsl-analyzer' and e.get('version') == pin['version'] and
+                    e.get('target') == 'win-x64' and e.get('url') == target['asset']['url'] for e in starts),
+                'No real pinned analyzer delivery attempt: original regression or unsupported path')
+        if delivery.get('status') == 'failed' and delivery.get('artifact') == 'bsl-analyzer':
+            require(bool(delivery.get('failureClass')), 'Delivery failure has no real classification')
+            report.update(status='REAL_DELIVERY_FAILURE', exitCode=2, delivery=delivery,
+                          note='Real delivery path reached; successful analyzer execution is NOT proven')
+            return
+        engine_root = installed(cache, manifest, 'bsl-analyzer')
+        tool = next(t for t in core_tools['tools'] if t['name'] == 'bsl-analyzer')
+        entry = tool.get('binaries', {}).get('win-x64', tool)
+        relative = entry.get('deliveredPath')
+        require(relative is not None, 'Packaged analyzer has no explicit deliveredPath')
+        engine_binary = (engine_root / relative).resolve()
+        require(engine_binary.is_relative_to(engine_root.resolve()), 'deliveredPath escapes own artifact')
+        require(engine_binary != (core_root / entry['binaryPath']).resolve(), 'Analyzer resolved inside core')
+        actual_sha = digest(engine_binary)
+        require(actual_sha == entry['sha256'], 'deliveredPath SHA differs from packaged tool pin')
+        require(any(f['path'] == relative and f['sha256'] == actual_sha for f in target['files']),
+                'deliveredPath SHA differs from release manifest')
+        data = value.get('data') or {}
+        # Published core records 'bsl' only after a completed full-verdict provider run.
+        # Module plans contain only BSL; validators is an array of names, not per-step status objects.
+        require(value.get('ok') is True and response.get('result', {}).get('isError') is not True
+                and value.get('at') == address and data.get('at') == address
+                and data.get('kind') == 'Module' and data.get('status') in {'passed', 'failed'}
+                and data.get('validators') == ['bsl'] and isinstance(data.get('diagnostics'), list)
+                and not data.get('task') and not data.get('delivery'),
+                'No terminal BSL verdict bound to the exact requested Module')
+        report.update(status='PASS', exitCode=0, deliveredPath=str(engine_binary),
+                      analyzerSha256=actual_sha, analyzerVersion=pin['version'], checkAddress=address,
+                      note='Candidate bootstrap with the published original core; not an all-head runtime build')
+    finally:
+        if client is not None:
+            report['runExitCode'] = client.close()
+            if report['runExitCode'] != 0:
+                report.update(status='FAIL_FRONTEND_EXIT', exitCode=1)
+        save(logs / 'sources-after.json', sources(workspace))
+        report['sourcesUnchanged'] = sources(workspace) == baseline and sources(fixture) == original
+        save(logs / 'cache-after.json', inventory(cache))
+        save(logs / 'remaining-daemons.json', endpoints(state))
+        if not report['sourcesUnchanged']:
+            report.update(status='FAIL_SOURCE_MUTATION', exitCode=1)
+        report['logs'] = str(logs)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--candidate-repo', type=Path, required=True)
+    parser.add_argument('--bootstrap', type=Path, required=True)
+    parser.add_argument('--build-provenance', type=Path, required=True)
+    parser.add_argument('--plugin-root', type=Path, required=True)
+    parser.add_argument('--scratch', type=Path, required=True, help='Must not exist')
+    parser.add_argument('--delivery-timeout', type=int, default=600)
+    args = parser.parse_args()
+    report = {'status': 'NOT_RUN', 'exitCode': 1}
+    try:
+        run(args, report)
+    except Exception as error:
+        report.update(status='BLOCKED_CORE_OR_PACKAGE' if report.get('phase') == 'verify' else 'FAIL_OR_INCOMPLETE',
+                      exitCode=1, error=type(error).__name__ + ': ' + str(error))
+    if report.get('scratch'):
+        save(Path(report['scratch']) / 'summary.json', report)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return report['exitCode']
+
+
+if __name__ == '__main__':
+    sys.exit(main())

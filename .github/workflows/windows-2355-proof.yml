@@ -1,0 +1,144 @@
+name: Windows 2355 one-off proof
+
+on:
+  push:
+    branches:
+      - codex/windows-2355-proof
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-2355-proof
+  cancel-in-progress: false
+
+jobs:
+  proof:
+    if: >-
+      github.repository == 'korolevpavel/unica' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/codex/windows-2355-proof' &&
+      github.event.deleted == false
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      PYTHONUTF8: '1'
+      RUSTUP_TOOLCHAIN: stable
+      CANDIDATE_HEAD: 9ccfa8f6f92248366df079733718db8f870ea754
+    steps:
+      - name: Checkout workflow and kit commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: korolevpavel/unica
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Initialize isolated runner paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw 'Windows x64 runner required.' }
+          $private = Join-Path $env:RUNNER_TEMP 'windows-2355-private'
+          $public = Join-Path $env:RUNNER_TEMP 'windows-2355-public'
+          if ((Test-Path -LiteralPath $private) -or (Test-Path -LiteralPath $public)) { throw 'Isolated paths already exist.' }
+          New-Item -ItemType Directory -Path $private | Out-Null
+          @{prepareExitCode=$null; smokeExitCode=$null} | ConvertTo-Json |
+            Set-Content -LiteralPath (Join-Path $private 'phase-status.json') -Encoding utf8
+          "PROOF_PRIVATE=$private" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PROOF_PUBLIC=$public" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Confirm MSVC and prepare stable Rust
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'MSVC discovery unavailable.' }
+          $msvc = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $msvc) { throw 'MSVC x64 tools unavailable.' }
+          $ErrorActionPreference = 'Continue'
+          $log = Join-Path $env:PROOF_PRIVATE 'rustup-console.log'
+          & rustup toolchain install stable --profile minimal --target x86_64-pc-windows-msvc *> $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { Write-Output 'Rust preparation failed; no raw output exported.' }
+          exit $code
+      - name: Build exact PR head and clone stock package
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kit = Join-Path $env:GITHUB_WORKSPACE 'ci/windows-2355'
+          $root = Join-Path $env:PROOF_PRIVATE 'candidate-root'
+          $log = Join-Path $env:PROOF_PRIVATE 'prepare-console.log'
+          & pwsh -NoProfile -File (Join-Path $kit 'prepare-candidate.ps1') -Root $root *> $log
+          $code = $LASTEXITCODE
+          @{prepareExitCode=$code; smokeExitCode=$null} | ConvertTo-Json |
+            Set-Content -LiteralPath (Join-Path $env:PROOF_PRIVATE 'phase-status.json') -Encoding utf8
+          if ($code -ne 0) { Write-Output 'Candidate/package preparation failed; no raw output exported.'; exit $code }
+          $built = Get-Content -LiteralPath (Join-Path $root 'candidate-build.json') -Raw | ConvertFrom-Json
+          if ($built.head -ne $env:CANDIDATE_HEAD) { throw 'Built candidate differs from workflow pin.' }
+          exit 0
+      - name: Run real verify then bootstrap then check
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kit = Join-Path $env:GITHUB_WORKSPACE 'ci/windows-2355'
+          $root = Join-Path $env:PROOF_PRIVATE 'candidate-root'
+          $scratch = Join-Path $env:PROOF_PRIVATE 'smoke'
+          $log = Join-Path $env:PROOF_PRIVATE 'smoke-console.log'
+          & python (Join-Path $kit 'run-smoke.py') `
+            --candidate-repo (Join-Path $root 'candidate') `
+            --bootstrap (Join-Path $root 'candidate-target/x86_64-pc-windows-msvc/release/unica-bootstrap.exe') `
+            --build-provenance (Join-Path $root 'candidate-build.json') `
+            --plugin-root (Join-Path $root 'marketplace/plugins/unica') `
+            --scratch $scratch *> $log
+          $code = $LASTEXITCODE
+          @{prepareExitCode=0; smokeExitCode=$code} | ConvertTo-Json |
+            Set-Content -LiteralPath (Join-Path $env:PROOF_PRIVATE 'phase-status.json') -Encoding utf8
+          if ($code -ne 0) { Write-Output 'Windows smoke did not pass; original nonzero exit retained.' }
+          exit $code
+      - name: Export only allowlisted proof and display verdict
+        if: ${{ always() }}
+        env:
+          WORKFLOW_SHA: ${{ github.sha }}
+          PROOF_RUN_ID: ${{ github.run_id }}
+          PROOF_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:PROOF_PRIVATE -or -not $env:PROOF_PUBLIC) { throw 'Proof paths were not initialized.' }
+          $log = Join-Path $env:PROOF_PRIVATE 'export-console.log'
+          $ErrorActionPreference = 'Continue'
+          & python (Join-Path $env:GITHUB_WORKSPACE 'ci/windows-2355/export-public-proof.py') `
+            --private-root $env:PROOF_PRIVATE --out $env:PROOF_PUBLIC `
+            --workflow-sha $env:WORKFLOW_SHA --run-id $env:PROOF_RUN_ID --run-attempt $env:PROOF_RUN_ATTEMPT *> $log
+          if ($LASTEXITCODE -ne 0) { throw 'Closed proof export failed.' }
+          $ErrorActionPreference = 'Stop'
+          Get-Content -LiteralPath (Join-Path $env:PROOF_PUBLIC 'proof.md') |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+      - name: Upload only closed proof files
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-2355-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/windows-2355-public/proof.json
+            ${{ runner.temp }}/windows-2355-public/proof.md
+            ${{ runner.temp }}/windows-2355-public/checksums.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - name: Preserve final nonzero verdict
+        if: ${{ always() }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'windows-2355-public/proof.json'
+          if (-not (Test-Path -LiteralPath $path)) { throw 'No closed proof: acceptance not passed.' }
+          $proof = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          if (-not $proof.acceptancePassed) {
+            Write-Output 'Windows acceptance NOT PASSED.'
+            if ($proof.smokeExitCode -eq 2) { exit 2 }
+            exit 1
+          }
+          Write-Output 'Windows acceptance PASS for the exact candidate bootstrap and published original core.'
