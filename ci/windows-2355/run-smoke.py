@@ -347,7 +347,7 @@ class MCP:
 
 
 def structured(response):
-    require('error' not in response, 'MCP RPC error; inspect mcp.jsonl')
+    require('error' not in response, 'MCP RPC error; inspect mcp.jsonl', 'check_rpc_error')
     result = response.get('result', {})
     value = result.get('structuredContent')
     # Some compatible tool responses carry the same structured JSON as text.
@@ -359,7 +359,7 @@ def structured(response):
                 except (ValueError, KeyError):
                     continue
                 break
-    require(isinstance(value, dict), 'No canonical check result; inspect mcp.jsonl')
+    require(isinstance(value, dict), 'No canonical check result; inspect mcp.jsonl', 'check_canonical_result_missing')
     return value
 
 
@@ -461,6 +461,8 @@ def run(args, report):
         deadline = time.monotonic() + args.delivery_timeout
         response = client.call('unica.check', {'at': address})
         while True:
+            report['checkStage'] = 'response'
+            save(logs / 'check-latest.json', response)
             value = structured(response)
             task = (value.get('data') or {}).get('task') or {}
             delivery = (value.get('data') or {}).get('delivery') or {}
@@ -475,9 +477,11 @@ def run(args, report):
             else:
                 break
         save(logs / 'check-final.json', response)
+        report['checkStage'] = 'daemon'
         after = endpoints(state, expected_identity, logs, 'after-check', report)
         save(logs / 'daemon-after-check.json', after)
         same_daemon(before, after)
+        report['checkStage'] = 'delivery-attempt'
         events = attempt_events(cache, 'bsl-analyzer')
         save(logs / 'analyzer-attempt-events.json', events)
         starts = [e for e in events if e.get('event') == 'started']
@@ -485,24 +489,29 @@ def run(args, report):
         target = pin['targets']['win-x64']
         require(any(e.get('artifact') == 'bsl-analyzer' and e.get('version') == pin['version'] and
                     e.get('target') == 'win-x64' and e.get('url') == target['asset']['url'] for e in starts),
-                'No real pinned analyzer delivery attempt: original regression or unsupported path')
+                'No real pinned analyzer delivery attempt: original regression or unsupported path', 'check_pinned_attempt_missing')
+        report['checkStage'] = 'delivery-result'
         if delivery.get('status') == 'failed' and delivery.get('artifact') == 'bsl-analyzer':
-            require(bool(delivery.get('failureClass')), 'Delivery failure has no real classification')
+            require(bool(delivery.get('failureClass')), 'Delivery failure has no real classification', 'check_delivery_class_missing')
             report.update(status='REAL_DELIVERY_FAILURE', exitCode=2, delivery=delivery,
                           note='Real delivery path reached; successful analyzer execution is NOT proven')
             return
+        report['checkStage'] = 'engine-installation'
         engine_root = installed(cache, manifest, 'bsl-analyzer')
         tool = next(t for t in core_tools['tools'] if t['name'] == 'bsl-analyzer')
         entry = tool.get('binaries', {}).get('win-x64', tool)
+        report['checkStage'] = 'delivered-path'
         relative = entry.get('deliveredPath')
-        require(relative is not None, 'Packaged analyzer has no explicit deliveredPath')
+        require(relative is not None, 'Packaged analyzer has no explicit deliveredPath', 'check_delivered_path_missing')
         engine_binary = (engine_root / relative).resolve()
-        require(engine_binary.is_relative_to(engine_root.resolve()), 'deliveredPath escapes own artifact')
-        require(engine_binary != (core_root / entry['binaryPath']).resolve(), 'Analyzer resolved inside core')
+        require(engine_binary.is_relative_to(engine_root.resolve()), 'deliveredPath escapes own artifact', 'check_delivered_path_escape')
+        require(engine_binary != (core_root / entry['binaryPath']).resolve(), 'Analyzer resolved inside core', 'check_delivered_path_in_core')
+        report['checkStage'] = 'binary-sha'
         actual_sha = digest(engine_binary)
-        require(actual_sha == entry['sha256'], 'deliveredPath SHA differs from packaged tool pin')
+        require(actual_sha == entry['sha256'], 'deliveredPath SHA differs from packaged tool pin', 'check_packaged_sha_mismatch')
         require(any(f['path'] == relative and f['sha256'] == actual_sha for f in target['files']),
-                'deliveredPath SHA differs from release manifest')
+                'deliveredPath SHA differs from release manifest', 'check_release_sha_mismatch')
+        report['checkStage'] = 'terminal-verdict'
         data = value.get('data') or {}
         # Published core records 'bsl' only after a completed full-verdict provider run.
         # Module plans contain only BSL; validators is an array of names, not per-step status objects.
@@ -511,7 +520,8 @@ def run(args, report):
                 and data.get('kind') == 'Module' and data.get('status') in {'passed', 'failed'}
                 and data.get('validators') == ['bsl'] and isinstance(data.get('diagnostics'), list)
                 and not data.get('task') and not data.get('delivery'),
-                'No terminal BSL verdict bound to the exact requested Module')
+                'No terminal BSL verdict bound to the exact requested Module', 'check_terminal_bsl_unproven')
+        report['checkStage'] = 'complete'
         report.update(status='PASS', exitCode=0, deliveredPath=str(engine_binary),
                       analyzerSha256=actual_sha, analyzerVersion=pin['version'], checkAddress=address,
                       note='Candidate bootstrap with the published original core; not an all-head runtime build')
