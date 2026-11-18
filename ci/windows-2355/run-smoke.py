@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 
-HEAD = '9ccfa8f6f92248366df079733718db8f870ea754'
+HEAD = '0d17bae1c84d6701397a84cb3ddb05429d955824'
 VERSION = '0.15.0-rc.1'
 HERE = Path(__file__).resolve().parent
 

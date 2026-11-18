@@ -1,7 +1,7 @@
 # Run only on the separately assigned Windows x64 build host/slot.
 param([Parameter(Mandatory=$true)][string]$Root)
 $ErrorActionPreference = 'Stop'
-$head = '9ccfa8f6f92248366df079733718db8f870ea754'
+$head = '0d17bae1c84d6701397a84cb3ddb05429d955824'
 if (Test-Path -LiteralPath $Root) { throw 'Root must not exist; use a new isolated directory.' }
 New-Item -ItemType Directory -Path $Root | Out-Null
 $Root = (Resolve-Path -LiteralPath $Root).Path
@@ -16,9 +16,9 @@ $env:PYTHONUTF8 = '1'
 $env:CARGO_TARGET_DIR = Join-Path $Root 'candidate-target'
 Invoke-Native 'git' @('clone', '--depth', '1', '--no-checkout', 'https://github.com/IngvarConsulting/unica.git', (Join-Path $Root 'candidate'))
 $candidate = Join-Path $Root 'candidate'
-Invoke-Native 'git' @('-C', $candidate, 'fetch', '--depth', '1', 'origin', 'refs/pull/2355/head')
+Invoke-Native 'git' @('-C', $candidate, 'fetch', '--depth', '1', 'https://github.com/korolevpavel/unica.git', 'refs/heads/codex/windows-2355-candidate')
 $live = (& git -C $candidate rev-parse FETCH_HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $live -ne $head) { throw 'PR head changed; stop and re-check compatibility.' }
+if ($LASTEXITCODE -ne 0 -or $live -ne $head) { throw 'Exact candidate ref changed; stop and re-check compatibility.' }
 Invoke-Native 'git' @('-C', $candidate, 'checkout', '--detach', $head)
 # Only bootstrap is built; core and engines retain the original published pins.
 Push-Location -LiteralPath $candidate

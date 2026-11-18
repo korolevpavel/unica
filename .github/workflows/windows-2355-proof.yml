@@ -28,7 +28,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       PYTHONUTF8: '1'
       RUSTUP_TOOLCHAIN: stable
-      CANDIDATE_HEAD: 9ccfa8f6f92248366df079733718db8f870ea754
+      CANDIDATE_HEAD: 0d17bae1c84d6701397a84cb3ddb05429d955824
     steps:
       - name: Checkout workflow and kit commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
